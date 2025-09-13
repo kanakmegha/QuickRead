@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
 import './Dashboard.css';
+import BookView from './BookView';
+import ChapterSidebar from './ChapterSidebar';
+import SummaryPanel from './SummaryPanel';
+import VisualMindmap3D from './VisualMindmap3D';
+import { parseChapters, summariseText, buildChapterGraph, tokenizeWords } from '../utils/parseText';
+import { apiEndpoints } from '../utils/api';
 
 export default function Dashboard() {
   const [text, setText] = useState("");
@@ -13,6 +19,15 @@ export default function Dashboard() {
   const [processingStartTime, setProcessingStartTime] = useState(null);
   const [estimatedTime, setEstimatedTime] = useState(30); // Default 30 seconds estimate
   const [remainingTime, setRemainingTime] = useState(30);
+  const [viewMode, setViewMode] = useState('speed'); // 'speed' | 'book'
+
+  // New state for chapters, summary, mindmap
+  const [chapters, setChapters] = useState([]);
+  const [activeChapterIdx, setActiveChapterIdx] = useState(0);
+  const [summary, setSummary] = useState('');
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [graphData, setGraphData] = useState(null);
+  const [bookScrollTarget, setBookScrollTarget] = useState(null);
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
@@ -37,7 +52,7 @@ export default function Dashboard() {
     }, 100);
 
     try {
-      const response = await fetch('http://localhost:5001/upload', {
+      const response = await fetch(apiEndpoints.upload, {
         method: 'POST',
         body: formData
       });
@@ -48,8 +63,15 @@ export default function Dashboard() {
 
       const data = await response.json();
       setText(data.text);
-      setWords(data.text.split(/\s+/));
+      const split = data.text.split(/\s+/);
+      setWords(split);
       setCurrentWordIndex(0);
+
+      // Parse chapters
+      const parsed = parseChapters(data.text);
+      setChapters(parsed.chapters);
+      setActiveChapterIdx(0);
+      setSummary('');
     } catch (error) {
       console.error('Error processing PDF:', error);
       alert('Error processing PDF file');
@@ -70,6 +92,7 @@ export default function Dashboard() {
     setIsPaused(!isPaused);
   };
 
+  // Move through words when reading
   useEffect(() => {
     let interval;
     if (isReading && !isPaused && words.length > 0) {
@@ -87,10 +110,57 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [isReading, isPaused, words, wpm]);
 
+  // Update active chapter based on current word index
+  useEffect(() => {
+    if (!chapters.length) return;
+    let idx = 0;
+    for (let i = 0; i < chapters.length; i++) {
+      const start = chapters[i].startWordIndex;
+      const nextStart = chapters[i + 1]?.startWordIndex ?? Number.MAX_SAFE_INTEGER;
+      if (currentWordIndex >= start && currentWordIndex < nextStart) { idx = i; break; }
+    }
+    setActiveChapterIdx(idx);
+  }, [currentWordIndex, chapters]);
+
+  // Build graph for current chapter
+  useEffect(() => {
+    if (!text || !chapters.length) { setGraphData(null); return; }
+    const start = chapters[activeChapterIdx]?.startWordIndex ?? 0;
+    const end = chapters[activeChapterIdx + 1]?.startWordIndex ?? words.length;
+    const slice = words.slice(start, end).join(' ');
+    setGraphData(buildChapterGraph(slice, 0, null, 12));
+  }, [text, words, chapters, activeChapterIdx]);
+
+  const handleSelectChapter = (idx) => {
+    if (!chapters[idx]) return;
+    const start = chapters[idx].startWordIndex;
+    setActiveChapterIdx(idx);
+    setCurrentWordIndex(start);
+    if (viewMode === 'book') {
+      setBookScrollTarget(start);
+    }
+  };
+
+  const handleGenerateSummary = () => {
+    if (!text || !chapters.length) return;
+    setGeneratingSummary(true);
+    setTimeout(() => {
+      try {
+        const start = chapters[activeChapterIdx]?.startWordIndex ?? 0;
+        const end = chapters[activeChapterIdx + 1]?.startWordIndex ?? words.length;
+        const slice = words.slice(start, end).join(' ');
+        const s = summariseText(slice, 8);
+        setSummary(s);
+      } finally {
+        setGeneratingSummary(false);
+      }
+    }, 50);
+  };
+
   return (
     <div className="container">
       <h1>Speed Reader</h1>
-      
+
       <div className="controls">
         <input 
           type="file" 
@@ -134,29 +204,59 @@ export default function Dashboard() {
                   {isPaused ? "Resume" : "Pause"}
               </button>
           )}
+
+          <button
+            onClick={() => setViewMode(viewMode === 'speed' ? 'book' : 'speed')}
+          >
+            {viewMode === 'speed' ? 'Switch to Book View' : 'Switch to Speed View'}
+          </button>
         </div>
       </div>
 
-      <div className="word-display">
-        {words.length > 0 && (
-          <div className="word-container">
-            <h2>{words[currentWordIndex]}</h2>
-            <div className="progress-container">
-                <div className="progress-bar">
-                    <div 
-                        className="progress" 
-                        style={{
-                            width: `${(currentWordIndex / (words.length - 1)) * 100}%`,
-                            transition: 'width 0.3s ease-in-out'
-                        }}
-                    />
-                </div>
-                <span className="progress-percentage">
-                    {Math.min(100, Math.round((currentWordIndex / (words.length - 1)) * 100))}%
-                </span>
-            </div>
+      <div className="main-grid">
+        <div className="left-panel">
+          <ChapterSidebar
+            chapters={chapters}
+            activeIndex={activeChapterIdx}
+            onSelect={handleSelectChapter}
+            disabled={words.length === 0}
+          />
         </div>
-        )}
+
+        <div className="center-panel">
+          <div className="word-display">
+            {words.length > 0 && (
+              <div className="word-container">
+                {viewMode === 'speed' ? (
+                  <>
+                    <h2>{words[currentWordIndex]}</h2>
+                    <div className="progress-container">
+                        <div className="progress-bar">
+                            <div 
+                                className="progress" 
+                                style={{
+                                    width: `${(currentWordIndex / (words.length - 1)) * 100}%`,
+                                    transition: 'width 0.3s ease-in-out'
+                                }}
+                            />
+                        </div>
+                        <span className="progress-percentage">
+                            {Math.min(100, Math.round((currentWordIndex / (words.length - 1)) * 100))}%
+                        </span>
+                    </div>
+                  </>
+                ) : (
+                  <BookView text={text} scrollToWordIndex={bookScrollTarget} />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="right-panel">
+          <SummaryPanel summary={summary} onGenerate={handleGenerateSummary} generating={generatingSummary} />
+          {graphData && <VisualMindmap3D graph={graphData} />}
+        </div>
       </div>
     </div>
   );

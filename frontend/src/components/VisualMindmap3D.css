@@ -1,0 +1,8 @@
+/* 3D Mindmap wrapper */
+.mindmap3d-wrapper {
+	border: 1.5px solid rgba(255,255,255,0.08);
+	border-radius: 16px;
+	overflow: hidden;
+	background: rgba(24, 28, 36, 0.7);
+	box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+} 
