@@ -44,7 +44,7 @@ docker-compose up --build
 Access the application:
 
 Frontend: Open your browser and visit http://localhost
-Backend API: Available at http://localhost:8000
+Backend API: Available at http://localhost:8000 for local and deployed in  https://quickread-bggq.onrender.com
 
 
 To stop the application:
