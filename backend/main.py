@@ -14,7 +14,7 @@ app = FastAPI()
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all origins (for dev)
+    allow_origins=["https://quick-read-five.vercel.app","https://localhost:80/"],  # allow all origins (for dev)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
