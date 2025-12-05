@@ -22,7 +22,9 @@ app.add_middleware(
 
 # Include the PDF router
 app.include_router(pdf_router, prefix="", tags=["pdf"])
-
+@app.get("/")
+def home():
+    return {"status": "Backend is running 🚀"}
 @app.get("/health")
 def health_check():
 	logger.info("Health check requested")

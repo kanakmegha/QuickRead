@@ -1,263 +1,360 @@
-import { useState, useEffect } from "react";
-import './Dashboard.css';
-import BookView from './BookView';
-import ChapterSidebar from './ChapterSidebar';
-import SummaryPanel from './SummaryPanel';
-import VisualMindmap3D from './VisualMindmap3D';
-import { parseChapters, summariseText, buildChapterGraph, tokenizeWords } from '../utils/parseText';
-import { apiEndpoints } from '../utils/api';
+import React, { useState, useEffect, useRef } from "react";
+import "../App.css";
+
+/**
+ * Dashboard: Book View + Speed Reader
+ * - Pages: 200 words per page (user requested)
+ * - Both modes start from Preface/Introduction if present
+ * - Book View: shows pages, first letter of each word bolded
+ * - Speed Reader: word-by-word reading with WPM control, Prev/Next word, Pause/Resume
+ */
+
+const PAGE_WORD_COUNT = 200; // words per page
 
 export default function Dashboard() {
-  const [text, setText] = useState("");
-  const [words, setWords] = useState([]);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
-  const [wpm, setWpm] = useState(200);
-  const [isReading, setIsReading] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [processingTime, setProcessingTime] = useState(0);
-  const [processingStartTime, setProcessingStartTime] = useState(null);
-  const [estimatedTime, setEstimatedTime] = useState(30); // Default 30 seconds estimate
-  const [remainingTime, setRemainingTime] = useState(30);
-  const [viewMode, setViewMode] = useState('speed'); // 'speed' | 'book'
+  const [rawSentences, setRawSentences] = useState([]); // backend sentences (objects or strings)
+  const [allWords, setAllWords] = useState([]); // flattened words (starting from preface)
+  const [pages, setPages] = useState([]); // array of pages (each page = array of words)
+  const [currentPage, setCurrentPage] = useState(0);
 
-  // New state for chapters, summary, mindmap
-  const [chapters, setChapters] = useState([]);
-  const [activeChapterIdx, setActiveChapterIdx] = useState(0);
-  const [summary, setSummary] = useState('');
-  const [generatingSummary, setGeneratingSummary] = useState(false);
-  const [graphData, setGraphData] = useState(null);
-  const [bookScrollTarget, setBookScrollTarget] = useState(null);
+  const [currentWordIndex, setCurrentWordIndex] = useState(0); // index relative to allWords
+  const [mode, setMode] = useState("book"); // "book" or "speed" — default Book View
+  const [reading, setReading] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
+  const [wpm, setWpm] = useState(300); // words per minute for speed reader
+  const intervalRef = useRef(null);
 
-    if (file.type !== 'application/pdf') {
-      alert('Please upload a PDF file');
+  const backendUrl = "http://localhost:8000"; // change if needed
+
+  // Utility: clear interval safely
+  const clearReaderInterval = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
+  // Convert backend sentences to array of strings (handles object or string)
+  const normalizeSentences = (sentences) => {
+    if (!Array.isArray(sentences)) return [];
+    if (sentences.length === 0) return [];
+    const first = sentences[0];
+    if (typeof first === "string") {
+      return sentences;
+    }
+    if (typeof first === "object") {
+      // find probable key containing text
+      if ("sentence" in first) {
+        return sentences.map((s) => (s && s.sentence) || "");
+      }
+      // fallback: take first string-like property
+      return sentences.map((s) => {
+        const keys = Object.keys(s);
+        for (const k of keys) {
+          if (typeof s[k] === "string") return s[k];
+        }
+        return "";
+      });
+    }
+    return sentences.map(String);
+  };
+
+  // After rawSentences changes: build words (starting at preface) and paginate
+  useEffect(() => {
+    if (!rawSentences || rawSentences.length === 0) {
+      setAllWords([]);
+      setPages([]);
+      setCurrentPage(0);
+      setCurrentWordIndex(0);
       return;
     }
 
-    setIsLoading(true);
-    setRemainingTime(estimatedTime); // Reset countdown
-    const formData = new FormData();
-    formData.append('file', file);
+    console.log("📌 Normalizing sentences from backend...");
+    const sentenceTexts = normalizeSentences(rawSentences);
 
-    // Start the countdown timer
-    const timer = setInterval(() => {
-      setRemainingTime((prev) => {
-        if (prev <= 0) return 0;
-        return prev - 0.1;
-      });
-    }, 100);
+    // Make a big string of full book text
+    const fullText = sentenceTexts.join(" ");
 
-    try {
-      const response = await fetch(apiEndpoints.upload, {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to process PDF');
-      }
-
-      const data = await response.json();
-      setText(data.text);
-      const split = data.text.split(/\s+/);
-      setWords(split);
-      setCurrentWordIndex(0);
-
-      // Parse chapters
-      const parsed = parseChapters(data.text);
-      setChapters(parsed.chapters);
-      setActiveChapterIdx(0);
-      setSummary('');
-    } catch (error) {
-      console.error('Error processing PDF:', error);
-      alert('Error processing PDF file');
-    } finally {
-      clearInterval(timer);
-      setRemainingTime(estimatedTime);
-      setIsLoading(false);
+    // Find preface/introduction start
+    const lower = fullText.toLowerCase();
+    let prefacePos = -1;
+    const prefaceMatch = lower.match(/preface|introduction/);
+    if (prefaceMatch) {
+      prefacePos = lower.indexOf(prefaceMatch[0]);
     }
-  };
+    const startFrom = prefacePos >= 0 ? prefacePos : 0;
+    console.log("🔍 Preface position in full text:", prefacePos);
 
-  const startReading = () => {
-    if (words.length === 0) return;
-    setIsReading(true);
-    setIsPaused(false);
-  };
+    // Extract substring from preface start
+    const textFromPreface = fullText.slice(startFrom);
 
-  const pauseReading = () => {
-    setIsPaused(!isPaused);
-  };
+    // Clean text: keep word characters and common punctuation only replaced with spaces for splitting
+    // but keep apostrophes so contractions remain intact.
+    const cleaned = textFromPreface.replace(/[^\w\s’'`-]/g, " "); // remove odd punctuation but keep apostrophes/hyphens
+    // split into words
+    const words = cleaned.split(/\s+/).filter(Boolean);
 
-  // Move through words when reading
+    console.log("🔡 Total words from (preface..end):", words.length);
+    // paginate into pages of PAGE_WORD_COUNT words
+    const newPages = [];
+    for (let i = 0; i < words.length; i += PAGE_WORD_COUNT) {
+      newPages.push(words.slice(i, i + PAGE_WORD_COUNT));
+    }
+
+    setAllWords(words);
+    setPages(newPages);
+    setCurrentPage(0);
+    setCurrentWordIndex(0);
+    setReading(false);
+    clearReaderInterval();
+  }, [rawSentences]);
+
+  // When WPM or reading changes, restart interval appropriately for speed mode
   useEffect(() => {
-    let interval;
-    if (isReading && !isPaused && words.length > 0) {
-      interval = setInterval(() => {
+    if (mode !== "speed") {
+      // ensure no interval running in book mode
+      clearReaderInterval();
+      return;
+    }
+
+    // If reading set true, start interval
+    if (reading) {
+      clearReaderInterval();
+      const ms = Math.max(10, Math.round(60000 / Math.max(1, wpm))); // ms per word
+      intervalRef.current = setInterval(() => {
         setCurrentWordIndex((prev) => {
-          if (prev >= words.length - 1) {
-            clearInterval(interval);
-            setIsReading(false);
+          if (prev >= allWords.length - 1) {
+            clearReaderInterval();
+            setReading(false);
             return prev;
           }
-          return prev + 1;
+          // update page if needed
+          const next = prev + 1;
+          const nextPage = Math.floor(next / PAGE_WORD_COUNT);
+          if (nextPage !== currentPage) {
+            setCurrentPage(nextPage);
+          }
+          return next;
         });
-      }, (60 / wpm) * 1000);
+      }, ms);
+    } else {
+      clearReaderInterval();
     }
-    return () => clearInterval(interval);
-  }, [isReading, isPaused, words, wpm]);
 
-  // Update active chapter based on current word index
+    // cleanup on unmount or changes
+    return () => clearReaderInterval();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reading, wpm, mode, allWords.length]); // watch mode so intervals are toggled correctly
+
+  // Debug helper: logs
   useEffect(() => {
-    if (!chapters.length) return;
-    let idx = 0;
-    for (let i = 0; i < chapters.length; i++) {
-      const start = chapters[i].startWordIndex;
-      const nextStart = chapters[i + 1]?.startWordIndex ?? Number.MAX_SAFE_INTEGER;
-      if (currentWordIndex >= start && currentWordIndex < nextStart) { idx = i; break; }
-    }
-    setActiveChapterIdx(idx);
-  }, [currentWordIndex, chapters]);
+    console.log("📚 Pages count:", pages.length);
+  }, [pages]);
 
-  // Build graph for current chapter
-  useEffect(() => {
-    if (!text || !chapters.length) { setGraphData(null); return; }
-    const start = chapters[activeChapterIdx]?.startWordIndex ?? 0;
-    const end = chapters[activeChapterIdx + 1]?.startWordIndex ?? words.length;
-    const slice = words.slice(start, end).join(' ');
-    setGraphData(buildChapterGraph(slice, 0, null, 12));
-  }, [text, words, chapters, activeChapterIdx]);
+  // Upload handler
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  const handleSelectChapter = (idx) => {
-    if (!chapters[idx]) return;
-    const start = chapters[idx].startWordIndex;
-    setActiveChapterIdx(idx);
-    setCurrentWordIndex(start);
-    if (viewMode === 'book') {
-      setBookScrollTarget(start);
-    }
-  };
+    console.log("📄 Selected file:", file.name);
+    setLoading(true);
+    setRawSentences([]);
+    setPages([]);
+    setAllWords([]);
+    setCurrentPage(0);
+    setCurrentWordIndex(0);
+    setReading(false);
+    clearReaderInterval();
 
-  const handleGenerateSummary = () => {
-    if (!text || !chapters.length) return;
-    setGeneratingSummary(true);
-    setTimeout(() => {
-      try {
-        const start = chapters[activeChapterIdx]?.startWordIndex ?? 0;
-        const end = chapters[activeChapterIdx + 1]?.startWordIndex ?? words.length;
-        const slice = words.slice(start, end).join(' ');
-        const s = summariseText(slice, 8);
-        setSummary(s);
-      } finally {
-        setGeneratingSummary(false);
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${backendUrl}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Upload failed: ${res.status} ${txt}`);
       }
-    }, 50);
+
+      const data = await res.json();
+      console.log("📩 Backend response keys:", Object.keys(data));
+      // Backend may return data.sentences as array of objects OR data.pages — handle both:
+      if (Array.isArray(data.pages) && data.pages.length > 0) {
+        // If backend gave pages already, convert pages -> sentences array without page markers:
+        // We'll convert pages array into sentences-like array of strings joined by space.
+        // But per user's request we will paginate ourselves using PAGE_WORD_COUNT; still use preface detection on joined pages.
+        // Convert pages (strings) into sentence-like array for normalization
+        const sentencesFromPages = data.pages.map((p) => (typeof p === "string" ? p : String(p)));
+        setRawSentences(sentencesFromPages);
+      } else if (Array.isArray(data.sentences) && data.sentences.length > 0) {
+        setRawSentences(data.sentences);
+      } else {
+        // If backend returns a long string in data.text
+        if (typeof data.text === "string" && data.text.length > 0) {
+          setRawSentences([data.text]);
+        } else {
+          console.warn("⚠️ Backend returned unexpected response format:", data);
+          setRawSentences([]);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Upload error:", err);
+      alert("Upload failed: " + (err.message || err));
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // Controls for speed reader:
+  const toggleReading = () => {
+    if (!allWords.length) return;
+    setReading((r) => !r);
+  };
+
+  const jumpPrevWord = () => {
+    setReading(false);
+    clearReaderInterval();
+    setCurrentWordIndex((i) => Math.max(0, i - 1));
+    setCurrentPage(Math.floor(Math.max(0, currentWordIndex - 1) / PAGE_WORD_COUNT));
+  };
+  const jumpNextWord = () => {
+    setReading(false);
+    clearReaderInterval();
+    setCurrentWordIndex((i) => Math.min(allWords.length - 1, i + 1));
+    setCurrentPage(Math.floor(Math.min(allWords.length - 1, currentWordIndex + 1) / PAGE_WORD_COUNT));
+  };
+
+  // Book view page navigation
+  const goToPrevPage = () => {
+    setReading(false);
+    clearReaderInterval();
+    setCurrentPage((p) => Math.max(0, p - 1));
+    // update currentWordIndex to first word of page
+    setCurrentWordIndex((_) => Math.max(0, (Math.max(0, currentPage - 1)) * PAGE_WORD_COUNT));
+  };
+
+  const goToNextPage = () => {
+    setReading(false);
+    clearReaderInterval();
+    setCurrentPage((p) => Math.min(pages.length - 1, p + 1));
+    setCurrentWordIndex((_) => Math.min(allWords.length - 1, Math.min(pages.length - 1, currentPage + 1) * PAGE_WORD_COUNT));
+  };
+
+  // Render page text with first letter bolded per word
+  const renderBoldFirstLetter = (pageWords = []) => {
+    return pageWords.map((w, i) => {
+      const first = w.charAt(0);
+      const rest = w.slice(1);
+      return (
+        <span key={i} style={{ marginRight: 6 }}>
+          <strong>{first}</strong>{rest}
+          {" "}
+        </span>
+      );
+    });
+  };
+
+  // When mode changes, ensure reading state/interval adjusted
+  useEffect(() => {
+    setReading(false);
+    clearReaderInterval();
+  }, [mode]);
+
+  // When currentPage changes, set currentWordIndex to page start (book view expectation)
+  useEffect(() => {
+    if (mode === "book" && pages.length > 0) {
+      const idx = Math.min(pages.length - 1, Math.max(0, currentPage));
+      setCurrentWordIndex(idx * PAGE_WORD_COUNT);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, mode]);
 
   return (
-    <div className="container">
-      <h1>Speed Reader</h1>
+    <div className="dashboard-root">
+      <h1>📚 QuickRead — Book View | Speed Reader</h1>
 
-      <div className="controls">
-        <input 
-          type="file" 
-          accept=".pdf" 
-          onChange={handleFileUpload} 
-          disabled={isLoading}
-        />
-        
-        {isLoading && (
-          <div className="processing-timer">
-            Processing PDF... {Math.max(0, remainingTime).toFixed(1)}s remaining
-          </div>
-        )}
-        
-        <div className="speed-control">
-          <label>Reading Speed (WPM): </label>
-          <input 
-            type="number" 
-            value={wpm} 
-            onChange={(e) => setWpm(Number(e.target.value))} 
-            min="50" 
-            max="1000" 
-          />
-        </div>
-        
-        <div className="button-group">
-          <button 
-            onClick={startReading} 
-            disabled={words.length === 0 || (isReading && !isPaused) || isLoading}
-          >
-            {isLoading ? "Processing PDF..." : 
-             isReading && !isPaused ? "Reading..." : 
-             isPaused ? "Resume" : "Start Reading"}
-          </button>
-          
-          {isReading && (
-              <button 
-                  onClick={pauseReading}
-                  className="pause-button"
-              >
-                  {isPaused ? "Resume" : "Pause"}
-              </button>
-          )}
-
-          <button
-            onClick={() => setViewMode(viewMode === 'speed' ? 'book' : 'speed')}
-          >
-            {viewMode === 'speed' ? 'Switch to Book View' : 'Switch to Speed View'}
-          </button>
-        </div>
+      <div className="upload-row">
+        <input type="file" accept="application/pdf" onChange={handleFileUpload} />
+        {loading && <span className="loading-text"> Extracting PDF... ⏳</span>}
       </div>
 
-      <div className="main-grid">
-        <div className="left-panel">
-          <ChapterSidebar
-            chapters={chapters}
-            activeIndex={activeChapterIdx}
-            onSelect={handleSelectChapter}
-            disabled={words.length === 0}
-          />
-        </div>
+      {!!pages.length ? (
+        <div className="modes-wrapper">
+          {/* Mode tabs */}
+          <div className="mode-tabs">
+            <button className={mode === "book" ? "tab active" : "tab"} onClick={() => setMode("book")}>
+              📘 Book View
+            </button>
+            <button className={mode === "speed" ? "tab active" : "tab"} onClick={() => setMode("speed")}>
+              ⚡ Speed Reader
+            </button>
+          </div>
 
-        <div className="center-panel">
-          <div className="word-display">
-            {words.length > 0 && (
-              <div className="word-container">
-                {viewMode === 'speed' ? (
-                  <>
-                    <h2>{words[currentWordIndex]}</h2>
-                    <div className="progress-container">
-                        <div className="progress-bar">
-                            <div 
-                                className="progress" 
-                                style={{
-                                    width: `${(currentWordIndex / (words.length - 1)) * 100}%`,
-                                    transition: 'width 0.3s ease-in-out'
-                                }}
-                            />
-                        </div>
-                        <span className="progress-percentage">
-                            {Math.min(100, Math.round((currentWordIndex / (words.length - 1)) * 100))}%
-                        </span>
-                    </div>
-                  </>
-                ) : (
-                  <BookView text={text} scrollToWordIndex={bookScrollTarget} />
-                )}
-              </div>
+          {/* Content area */}
+          <div className="content-area">
+            {mode === "book" ? (
+              <>
+                <div className="book-header">
+                  <div>Page {currentPage + 1} / {pages.length}</div>
+                  <div className="book-controls">
+                    <button onClick={goToPrevPage} disabled={currentPage <= 0}>⬅ Prev Page</button>
+                    <button onClick={() => { setMode("speed"); /* go to corresponding speed reader word */ setCurrentWordIndex(currentPage * PAGE_WORD_COUNT); }}>Switch to Speed Reader</button>
+                    <button onClick={goToNextPage} disabled={currentPage >= pages.length - 1}>Next Page ➡</button>
+                  </div>
+                </div>
+
+                <div className="book-view-area">
+                  {renderBoldFirstLetter(pages[currentPage])}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="speed-header">
+                  <div>Word {currentWordIndex + 1} / {allWords.length}</div>
+                  <div className="speed-controls">
+                    <label>WPM: </label>
+                    <input
+                      type="number"
+                      min={50}
+                      max={2000}
+                      value={wpm}
+                      onChange={(e) => setWpm(Math.max(1, Number(e.target.value) || 300))}
+                      style={{ width: 90 }}
+                    />
+                  </div>
+                </div>
+
+                <div className="speed-reader-area">
+                  <div className="big-word">
+                    {allWords[currentWordIndex] || ""}
+                  </div>
+                </div>
+
+                <div className="speed-buttons">
+                  <button onClick={() => { setMode("book"); }}>Back to Book View</button>
+
+                  <button onClick={jumpPrevWord} disabled={currentWordIndex <= 0}>⬅ Prev Word</button>
+
+                  <button onClick={toggleReading} disabled={!allWords.length}>
+                    {reading ? "Pause ⏸" : "Start ▶️"}
+                  </button>
+
+                  <button onClick={jumpNextWord} disabled={currentWordIndex >= allWords.length - 1}>Next ➡</button>
+                </div>
+              </>
             )}
           </div>
         </div>
-
-        <div className="right-panel">
-          <SummaryPanel summary={summary} onGenerate={handleGenerateSummary} generating={generatingSummary} />
-          {graphData && <VisualMindmap3D graph={graphData} />}
+      ) : (
+        <div className="placeholder">
+          <p>Upload a PDF to begin. Pages will be split at {PAGE_WORD_COUNT} words per page and reading will start from Preface / Introduction if present.</p>
         </div>
-      </div>
+      )}
     </div>
   );
 }

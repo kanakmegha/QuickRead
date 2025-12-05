@@ -50,7 +50,7 @@ git push origin main
 ### 3. Note Your Backend URL
 
 After deployment, your backend will be available at:
-`https://quickread-backend.onrender.com`
+'http://127.0.0.1:8000'
 
 ## 🌐 Part 2: Deploy Frontend to Vercel
 
@@ -99,7 +99,7 @@ vercel
    - **Output Directory**: `build`
    - **Install Command**: `npm install`
 5. **Environment Variables**:
-   - Add `REACT_APP_BACKEND_URL` = `https://quickread-backend.onrender.com`
+   - Add `REACT_APP_BACKEND_URL` = `http://127.0.0.1:8000/`
 6. **Deploy**: Click "Deploy"
 
 ### 3. Update CORS Configuration

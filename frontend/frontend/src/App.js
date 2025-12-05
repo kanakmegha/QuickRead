@@ -1,4 +1,4 @@
-import logo from './logo.svg';
+/* import logo from './logo.svg';
 import './App.css';
 
 function App() {
@@ -18,6 +18,68 @@ function App() {
           Learn React
         </a>
       </header>
+    </div>
+  );
+}
+
+export default App;
+ */
+import { useState } from "react";
+import "./App.css";
+
+function App() {
+  const [sentences, setSentences] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const uploadPDF = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setLoading(true);
+    setError("");
+    setSentences([]);
+
+
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch("http://127.0.0.1:8000/upload", {
+      method: "POST",
+      body: formData
+    });
+
+    if (!response.ok) throw new Error("Failed to process PDF");
+
+    const data = await response.json();
+    console.log(data.text);
+
+
+      
+
+      if (!data.sentences || !Array.isArray(data.sentences)) {
+        throw new Error("Invalid response format");
+      }
+
+      setSentences(data.sentences.map(item => item.sentence));
+    
+    
+  };
+
+  return (
+    <div className="App">
+      <h2>QuickRead 📄 → ✨</h2>
+      <input type="file" accept="application/pdf" onChange={uploadPDF} />
+
+      {loading && <p>Processing PDF... ⏳</p>}
+      {error && <p style={{ color: "red" }}>{error}</p>}
+
+      <div style={{ marginTop: 20 }}>
+        {sentences.map((sentence, index) => (
+          <p key={index}>• {sentence}</p>
+        ))}
+      </div>
     </div>
   );
 }

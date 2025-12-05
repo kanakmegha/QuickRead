@@ -14,7 +14,7 @@ export default function ChapterSidebar({ chapters, activeIndex, onSelect, disabl
 							disabled={disabled}
 						>
 							{c.title?.slice(0, 80) || `Chapter ${idx+1}`}
-						</button>
+						</button>x
 					</li>
 				))}
 			</ul>
