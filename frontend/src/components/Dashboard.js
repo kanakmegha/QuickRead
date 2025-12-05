@@ -25,7 +25,7 @@ export default function Dashboard() {
   const [wpm, setWpm] = useState(300); // words per minute for speed reader
   const intervalRef = useRef(null);
 
-  const backendUrl = "h https://quickread-bggq.onrender.com"; // change if needed
+  const backendUrl = "https://quickread-bggq.onrender.com"; // change if needed
 
   // Utility: clear interval safely
   const clearReaderInterval = () => {
