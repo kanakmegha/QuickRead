@@ -50,7 +50,7 @@ git push origin main
 ### 3. Note Your Backend URL
 
 After deployment, your backend will be available at:
-'http://127.0.0.1:8000'
+' https://quickread-bggq.onrender.com'
 
 ## 🌐 Part 2: Deploy Frontend to Vercel
 
