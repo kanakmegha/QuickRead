@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.pdf import router as pdf_router
 import logging
 import os
+from routes.auth import router as auth_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,8 @@ app.add_middleware(
 
 # Include the PDF router
 app.include_router(pdf_router, prefix="", tags=["pdf"])
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
+
 @app.get("/")
 def home():
     return {"status": "Backend is running 🚀"}
