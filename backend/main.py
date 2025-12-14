@@ -20,6 +20,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+from routes.pdf import router as pdf_router
+app.include_router(pdf_router)
 
 # Include the PDF router
 app.include_router(pdf_router, prefix="", tags=["pdf"])
