@@ -183,6 +183,7 @@ export default function Dashboard() {
 
       const data = await res.json();
       console.log("📩 Backend response keys:", Object.keys(data));
+      
       // Backend may return data.sentences as array of objects OR data.pages — handle both:
       if (Array.isArray(data.pages) && data.pages.length > 0) {
         // If backend gave pages already, convert pages -> sentences array without page markers:

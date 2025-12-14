@@ -1,79 +1,80 @@
 import os
 import logging
 import pdfplumber
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from database import supabase
-from utils.auth import verify_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+TEMP_DIR = "temp"
 
 def process_page(page):
     text = page.extract_text()
     return text if text else ""
 
 @router.post("/upload")
-async def upload_pdf(
-    file: UploadFile = File(...),
-    user=Depends(verify_user)
-):
-    user_id = user.user.id  # logged-in user's ID
-    logger.info(f"📤 Upload request from user: {user_id}")
+async def upload_pdf(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
-    file_path = f"temp/{user_id}_{file.filename}"
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    temp_path = os.path.join(TEMP_DIR, file.filename)
 
     try:
-        # Validate file type
-        if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        # 1️⃣ Save file temporarily
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
 
-        # Save temporarily
-        os.makedirs("temp", exist_ok=True)
-        with open(file_path, "wb") as buffer:
-            buffer.write(await file.read())
+        # 2️⃣ Upload to Supabase Storage (books bucket)
+        with open(temp_path, "rb") as f:
+            upload_response = supabase.storage.from_("books").upload(
+                file.filename,
+                f,
+                file_options={"content-type": "application/pdf"}
+            )
 
-        # Extract PDF text
+        if upload_response.get("error"):
+            raise Exception(upload_response["error"])
+
+        # 3️⃣ Create signed URL (1 year)
+        signed_url = supabase.storage.from_("books").create_signed_url(
+            file.filename,
+            60 * 60 * 24 * 365
+        )["signedURL"]
+
+        # 4️⃣ Extract text
         texts = []
-        with pdfplumber.open(file_path) as pdf:
-            for idx, page in enumerate(pdf.pages):
-                try:
-                    texts.append(process_page(page))
-                except Exception as e:
-                    logger.warning(f"⚠ Error processing page {idx}: {e}")
+        with pdfplumber.open(temp_path) as pdf:
+            for page in pdf.pages:
+                texts.append(process_page(page))
 
-        full_text = " ".join(texts)
-        full_text = " ".join(full_text.split())
-
+        full_text = " ".join(texts).strip()
         if not full_text:
-            raise HTTPException(status_code=422, detail="No readable text found in this PDF")
+            raise HTTPException(status_code=422, detail="No readable text found")
 
-        # Convert into sentence list
         sentences = [{"sentence": s.strip()} for s in full_text.split('.') if s.strip()]
 
-        logger.info(f"📝 Extracted {len(sentences)} sentences")
+        # 5️⃣ Store metadata ONLY
+        db_response = supabase.table("user_uploads").insert({
+            "file_name": file.filename,
+            "storage_path": file.filename,
+            "total_pages": len(texts)
+        }).execute()
 
-        # Save PDF metadata in Supabase
-        try:
-            supabase.table("user_uploads").insert({
-                "user_id": user_id,
-                "file_name": file.filename,
-                "pages_count": len(texts)
-            }).execute()
-        except Exception as e:
-            logger.error(f"⚠ Failed to log upload in DB: {e}")
+        logger.info(f"✅ Stored metadata: {db_response.data}")
 
+        # 6️⃣ Return to frontend
         return {
             "status": "success",
-            "total_sentences": len(sentences),
-            "sentences": sentences
+            "sentences": sentences,
+            "pdf_url": signed_url
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ PDF Processing Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process PDF")
+        logger.error(f"❌ Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="PDF upload failed")
 
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
