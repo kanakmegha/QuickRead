@@ -28,7 +28,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         # 2️⃣ Upload to Supabase Storage (books bucket)
         with open(temp_path, "rb") as f:
-            upload_response = supabase.storage.from_("books").upload(
+            upload_response = supabase.storage.from_("Books").upload(
                 file.filename,
                 f,
                 file_options={"content-type": "application/pdf"}
