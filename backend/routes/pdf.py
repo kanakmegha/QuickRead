@@ -1,17 +1,19 @@
 import os
 import logging
-import uuid  # For unique paths
+import uuid
 import pdfplumber
+from concurrent.futures import ThreadPoolExecutor, as_completed  # For parallel processing
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from database import supabase  # Assuming this is your initialized client with service key
+from database import supabase_admin  # Use admin client for server-side uploads/DB
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TEMP_DIR = "temp"
-BUCKET_NAME = "Books"  # Standardize here—match your dashboard exactly (case-sensitive!)
+BUCKET_NAME = "Books"  # Match your dashboard exactly (case-sensitive!)
 
 def process_page(page):
+    """Extract text from a single page."""
     text = page.extract_text()
     return text if text else ""
 
@@ -24,7 +26,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     temp_path = os.path.join(TEMP_DIR, file.filename)
 
     try:
-        # 1️⃣ Save file temporarily (or stream directly if <6MB)
+        # 1️⃣ Save file temporarily
         content = await file.read()  # Read once into memory
         with open(temp_path, "wb") as f:
             f.write(content)
@@ -34,11 +36,11 @@ async def upload_pdf(file: UploadFile = File(...)):
         
         # 2️⃣ Upload to Supabase Storage
         with open(temp_path, "rb") as f:
-            upload_response = supabase.storage.from_(BUCKET_NAME).upload(
+            upload_response = supabase_admin.storage.from_(BUCKET_NAME).upload(
                 unique_filename,  # Use unique path
                 f,
                 options={
-                    "content_type": "application/pdf",  # Snake_case key!
+                    "content_type": "application/pdf",  # Correct snake_case key
                     "upsert": True  # Overwrite if somehow conflicts
                 }
             )
@@ -51,9 +53,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.info(f"✅ Uploaded to {BUCKET_NAME}/{unique_filename}")
 
         # 3️⃣ Create signed URL (1 year = 31536000 seconds)
-        signed_response = supabase.storage.from_(BUCKET_NAME).create_signed_url(  # Same bucket!
+        signed_response = supabase_admin.storage.from_(BUCKET_NAME).create_signed_url(
             unique_filename,
-            60 * 60 * 24 * 365
+            31536000  # 1 year in seconds
         )
         if signed_response.get("error"):
             error_msg = signed_response["error"].get("message", "Unknown signed URL error")
@@ -61,11 +63,31 @@ async def upload_pdf(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=f"Signed URL failed: {error_msg}")
         signed_url = signed_response["signedURL"]
 
-        # 4️⃣ Extract text
+        # 4️⃣ Extract text in parallel
         texts = []
         with pdfplumber.open(temp_path) as pdf:
-            for page in pdf.pages:
-                texts.append(process_page(page))
+            pages = pdf.pages  # Get all pages upfront (fast)
+
+        if not pages:
+            raise HTTPException(status_code=422, detail="No pages found in PDF")
+
+        # Parallel processing
+        max_workers = min(8, len(pages))  # Tune: 4-16 based on CPU/traffic
+        texts = [None] * len(pages)  # Preserve order
+
+        def extract_single(page_idx):
+            page = pages[page_idx]
+            return page_idx, process_page(page)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_idx = {
+                executor.submit(extract_single, idx): idx for idx in range(len(pages))
+            }
+            # Collect in completion order, but store in original order
+            for future in as_completed(future_to_idx):
+                idx, text = future.result()
+                texts[idx] = text
 
         full_text = " ".join(texts).strip()
         if not full_text:
@@ -74,7 +96,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         sentences = [{"sentence": s.strip()} for s in full_text.split('.') if s.strip()]
 
         # 5️⃣ Store metadata (use unique_filename for storage_path)
-        db_response = supabase.table("user_uploads").insert({
+        db_response = supabase_admin.table("user_uploads").insert({
             "file_name": file.filename,
             "storage_path": unique_filename,  # Full path for accuracy
             "total_pages": len(texts)
@@ -96,7 +118,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     except HTTPException:
         raise  # Re-raise FastAPI exceptions
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}")
+        logger.error(f"❌ Unexpected error: {e}", exc_info=True)  # Full traceback for debugging
         raise HTTPException(status_code=500, detail="PDF processing failed")
     finally:
         if os.path.exists(temp_path):
