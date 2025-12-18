@@ -4,7 +4,6 @@ import "../App.css";
 const PAGE_WORD_COUNT = 200;
 
 export default function Dashboard() {
-  // Only store the RAW data in state to save memory
   const [rawSentences, setRawSentences] = useState([]); 
   const [currentPage, setCurrentPage] = useState(0);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
@@ -16,56 +15,33 @@ export default function Dashboard() {
 
   const backendUrl = "https://quickread-bggq.onrender.com";
 
-  const clearReaderInterval = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  }, []);
-
-  // --- OPTIMIZED DATA PROCESSING (useMemo) ---
-  // This calculates words/pages ONLY when rawSentences changes.
-  // It prevents the browser from re-calculating on every UI toggle.
+  // --- MEMORY OPTIMIZED DATA CALCULATION ---
   const { allWords, pages } = useMemo(() => {
-    if (!rawSentences || rawSentences.length === 0) return { allWords: [], pages: [] };
+    if (rawSentences.length === 0) return { allWords: [], pages: [] };
 
-    // 1. Normalize
-    const sentenceTexts = rawSentences.map(s => {
-      if (typeof s === "string") return s;
-      if (typeof s === "object") return s.sentence || Object.values(s).find(v => typeof v === "string") || "";
-      return String(s);
-    });
-
-    const fullText = sentenceTexts.join(" ");
-
-    // 2. Preface Detection
+    // Join the streaming pages and find preface
+    const fullText = rawSentences.join(" ");
     const lower = fullText.toLowerCase();
     const prefaceMatch = lower.match(/preface|introduction/);
     const startFrom = prefaceMatch ? lower.indexOf(prefaceMatch[0]) : 0;
 
-    // 3. Clean & Tokenize (Memory Efficient)
     const cleaned = fullText.slice(startFrom).replace(/[^\w\s’'`-]/g, " ");
     const words = cleaned.split(/\s+/).filter(Boolean);
 
-    // 4. Paginate
     const p = [];
     for (let i = 0; i < words.length; i += PAGE_WORD_COUNT) {
       p.push(words.slice(i, i + PAGE_WORD_COUNT));
     }
-
     return { allWords: words, pages: p };
   }, [rawSentences]);
 
-  // --- FILE UPLOAD (Crash-Proofed) ---
+  // --- STREAMING UPLOAD HANDLER ---
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // PREVENT CRASH: Clear old data immediately to free RAM
     setLoading(true);
-    setReading(false);
-    clearReaderInterval();
-    setRawSentences([]); // Triggers cleanup of allWords/pages
+    setRawSentences([]); // CLEAR MEMORY for new file
     setCurrentPage(0);
     setCurrentWordIndex(0);
 
@@ -73,26 +49,34 @@ export default function Dashboard() {
     formData.append("file", file);
 
     try {
-      const res = await fetch(`${backendUrl}/upload`, {
-        method: "POST",
-        body: formData,
+      const response = await fetch(`${backendUrl}/upload`, {
+          method: "POST",
+          body: formData,
       });
 
-      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let partialChunk = "";
 
-      const data = await res.json();
-      
-      // Support various backend formats
-      if (Array.isArray(data.pages)) {
-        setRawSentences(data.pages);
-      } else if (Array.isArray(data.sentences)) {
-        setRawSentences(data.sentences);
-      } else if (data.text) {
-        setRawSentences([data.text]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = (partialChunk + chunk).split("\n");
+        partialChunk = lines.pop(); // Hold onto partial line
+
+        const extractedTexts = lines
+          .filter(l => l.trim())
+          .map(l => JSON.parse(l).text);
+
+        // Update state incrementally so user sees pages loading
+        if (extractedTexts.length > 0) {
+          setRawSentences(prev => [...prev, ...extractedTexts]);
+        }
       }
     } catch (err) {
-      console.error("❌ Error:", err);
-      alert("Extraction failed. The file may be too large for the current server limits.");
+      console.error("Stream failed", err);
     } finally {
       setLoading(false);
     }
@@ -101,7 +85,7 @@ export default function Dashboard() {
   // --- SPEED READER ENGINE ---
   useEffect(() => {
     if (mode === "speed" && reading && allWords.length > 0) {
-      const ms = Math.max(15, Math.round(60000 / wpm));
+      const ms = Math.max(10, Math.round(60000 / wpm));
       intervalRef.current = setInterval(() => {
         setCurrentWordIndex((prev) => {
           if (prev >= allWords.length - 1) {
@@ -109,75 +93,56 @@ export default function Dashboard() {
             return prev;
           }
           const next = prev + 1;
-          // Sync page index with word index
           const nextPage = Math.floor(next / PAGE_WORD_COUNT);
           if (nextPage !== currentPage) setCurrentPage(nextPage);
           return next;
         });
       }, ms);
     } else {
-      clearReaderInterval();
+      if (intervalRef.current) clearInterval(intervalRef.current);
     }
-    return () => clearReaderInterval();
-  }, [reading, wpm, mode, allWords.length, currentPage, clearReaderInterval]);
+    return () => if (intervalRef.current) clearInterval(intervalRef.current);
+  }, [reading, wpm, mode, allWords.length, currentPage]);
 
-  // --- HELPERS ---
-  const renderPage = useCallback((pageWords = []) => {
+  const renderPage = (pageWords = []) => {
     return pageWords.map((w, i) => (
       <span key={i} style={{ marginRight: 6 }}>
-        <strong>{w.charAt(0)}</strong>{w.slice(1)}{" "}
+        <strong>{w.charAt(0)}</strong>{w.slice(1)} 
       </span>
     ));
-  }, []);
+  };
 
   return (
     <div className="dashboard-root">
       <h1>📚 QuickRead</h1>
-
       <div className="upload-row">
         <input type="file" accept="application/pdf" onChange={handleFileUpload} />
-        {loading && <span className="loading-text"> Processing Large Document... ⏳</span>}
+        {loading && <span> 🔄 Loading Pages... {rawSentences.length} loaded</span>}
       </div>
 
       {pages.length > 0 && (
-        <div className="modes-wrapper">
+        <div className="content-area">
           <div className="mode-tabs">
-            <button className={mode === "book" ? "active" : ""} onClick={() => setMode("book")}>📘 Book View</button>
-            <button className={mode === "speed" ? "active" : ""} onClick={() => setMode("speed")}>⚡ Speed Reader</button>
+            <button onClick={() => setMode("book")} className={mode === "book" ? "active" : ""}>Book</button>
+            <button onClick={() => setMode("speed")} className={mode === "speed" ? "active" : ""}>Speed Reader</button>
           </div>
 
-          <div className="content-area">
-            {mode === "book" ? (
-              <div className="book-container">
-                <div className="book-header">
-                  <span>Page {currentPage + 1} of {pages.length}</span>
-                  <div className="btn-group">
-                    <button disabled={currentPage === 0} onClick={() => {
-                        const newPage = currentPage - 1;
-                        setCurrentPage(newPage);
-                        setCurrentWordIndex(newPage * PAGE_WORD_COUNT);
-                    }}>Prev</button>
-                    <button disabled={currentPage >= pages.length - 1} onClick={() => {
-                        const newPage = currentPage + 1;
-                        setCurrentPage(newPage);
-                        setCurrentWordIndex(newPage * PAGE_WORD_COUNT);
-                    }}>Next</button>
-                  </div>
-                </div>
-                <div className="book-view-area">{renderPage(pages[currentPage])}</div>
+          {mode === "book" ? (
+            <div className="book-view">
+              <div className="controls">
+                <button onClick={() => setCurrentPage(p => Math.max(0, p-1))}>Prev</button>
+                <span>Page {currentPage + 1} of {pages.length}</span>
+                <button onClick={() => setCurrentPage(p => Math.min(pages.length-1, p+1))}>Next</button>
               </div>
-            ) : (
-              <div className="speed-container">
-                <div className="big-word-display">
-                  <div className="focus-word">{allWords[currentWordIndex]}</div>
-                </div>
-                <div className="speed-controls">
-                    <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} />
-                    <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
-                </div>
-              </div>
-            )}
-          </div>
+              <div className="text-display">{renderPage(pages[currentPage])}</div>
+            </div>
+          ) : (
+            <div className="speed-view">
+              <div className="word-display">{allWords[currentWordIndex]}</div>
+              <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
+              <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} />
+            </div>
+          )}
         </div>
       )}
     </div>
