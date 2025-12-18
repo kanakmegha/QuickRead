@@ -1,14 +1,19 @@
-from supabase import create_client
 import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+load_dotenv()
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("Supabase env vars missing")
+url: str = os.environ.get("SUPABASE_URL")
+# Use the SERVICE_ROLE_KEY for the admin client
+# This allows the backend to upload files and manage the DB without RLS restrictions
+key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") 
 
-# ✅ ONLY ONE CLIENT (ADMIN)
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY
-)
+if not url or not key:
+    raise ValueError("Supabase URL or Service Role Key is missing from environment variables")
+
+# We name this 'supabase_admin' so it matches the import in pdf.py
+supabase_admin: Client = create_client(url, key)
+
+# (Optional) If you also use the 'supabase' name elsewhere, you can keep it:
+supabase = supabase_admin
