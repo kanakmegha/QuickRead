@@ -15,9 +15,9 @@ app = FastAPI()
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://quick-read-five.vercel.app","https://localhost:80/"],  # allow all origins (for dev)
+    allow_origins=["*"],  # allow all origins (for dev)
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 from routes.pdf import router as pdf_router
