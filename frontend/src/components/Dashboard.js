@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import "../App.css";
 
 const PAGE_WORD_COUNT = 200;
@@ -19,7 +19,6 @@ export default function Dashboard() {
   const { allWords, pages } = useMemo(() => {
     if (rawSentences.length === 0) return { allWords: [], pages: [] };
 
-    // Join the streaming pages and find preface
     const fullText = rawSentences.join(" ");
     const lower = fullText.toLowerCase();
     const prefaceMatch = lower.match(/preface|introduction/);
@@ -41,7 +40,7 @@ export default function Dashboard() {
     if (!file) return;
 
     setLoading(true);
-    setRawSentences([]); // CLEAR MEMORY for new file
+    setRawSentences([]); 
     setCurrentPage(0);
     setCurrentWordIndex(0);
 
@@ -64,13 +63,15 @@ export default function Dashboard() {
 
         const chunk = decoder.decode(value, { stream: true });
         const lines = (partialChunk + chunk).split("\n");
-        partialChunk = lines.pop(); // Hold onto partial line
+        partialChunk = lines.pop(); 
 
         const extractedTexts = lines
           .filter(l => l.trim())
-          .map(l => JSON.parse(l).text);
+          .map(l => {
+            try { return JSON.parse(l).text; } 
+            catch(e) { return ""; }
+          });
 
-        // Update state incrementally so user sees pages loading
         if (extractedTexts.length > 0) {
           setRawSentences(prev => [...prev, ...extractedTexts]);
         }
@@ -101,7 +102,11 @@ export default function Dashboard() {
     } else {
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
-    return () => if (intervalRef.current) clearInterval(intervalRef.current);
+
+    // FIXED CLEANUP SYNTAX
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [reading, wpm, mode, allWords.length, currentPage]);
 
   const renderPage = (pageWords = []) => {
@@ -117,13 +122,13 @@ export default function Dashboard() {
       <h1>📚 QuickRead</h1>
       <div className="upload-row">
         <input type="file" accept="application/pdf" onChange={handleFileUpload} />
-        {loading && <span> 🔄 Loading Pages... {rawSentences.length} loaded</span>}
+        {loading && <span> 🔄 Loading: {rawSentences.length} pages processed...</span>}
       </div>
 
       {pages.length > 0 && (
         <div className="content-area">
           <div className="mode-tabs">
-            <button onClick={() => setMode("book")} className={mode === "book" ? "active" : ""}>Book</button>
+            <button onClick={() => setMode("book")} className={mode === "book" ? "active" : ""}>Book View</button>
             <button onClick={() => setMode("speed")} className={mode === "speed" ? "active" : ""}>Speed Reader</button>
           </div>
 
@@ -138,9 +143,14 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="speed-view">
-              <div className="word-display">{allWords[currentWordIndex]}</div>
-              <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
-              <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} />
+              <div className="word-display" style={{fontSize: '3rem', textAlign: 'center', margin: '40px 0'}}>
+                {allWords[currentWordIndex]}
+              </div>
+              <div className="speed-controls" style={{textAlign: 'center'}}>
+                <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
+                <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} style={{width: '80px', marginLeft: '10px'}} />
+                <span> WPM</span>
+              </div>
             </div>
           )}
         </div>
