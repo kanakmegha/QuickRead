@@ -1,171 +1,73 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import "../App.css";
 
-/**
- * Dashboard: Book View + Speed Reader
- * - Pages: 200 words per page (user requested)
- * - Both modes start from Preface/Introduction if present
- * - Book View: shows pages, first letter of each word bolded
- * - Speed Reader: word-by-word reading with WPM control, Prev/Next word, Pause/Resume
- */
-
-const PAGE_WORD_COUNT = 200; // words per page
+const PAGE_WORD_COUNT = 200;
 
 export default function Dashboard() {
-  const [rawSentences, setRawSentences] = useState([]); // backend sentences (objects or strings)
-  const [allWords, setAllWords] = useState([]); // flattened words (starting from preface)
-  const [pages, setPages] = useState([]); // array of pages (each page = array of words)
+  // Only store the RAW data in state to save memory
+  const [rawSentences, setRawSentences] = useState([]); 
   const [currentPage, setCurrentPage] = useState(0);
-
-  const [currentWordIndex, setCurrentWordIndex] = useState(0); // index relative to allWords
-  const [mode, setMode] = useState("book"); // "book" or "speed" — default Book View
+  const [currentWordIndex, setCurrentWordIndex] = useState(0);
+  const [mode, setMode] = useState("book");
   const [reading, setReading] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  const [wpm, setWpm] = useState(300); // words per minute for speed reader
+  const [wpm, setWpm] = useState(300);
   const intervalRef = useRef(null);
 
-  const backendUrl = "https://quickread-bggq.onrender.com"; // change if needed
+  const backendUrl = "https://quickread-bggq.onrender.com";
 
-  // Utility: clear interval safely
-  const clearReaderInterval = () => {
+  const clearReaderInterval = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-  };
+  }, []);
 
-  // Convert backend sentences to array of strings (handles object or string)
-  const normalizeSentences = (sentences) => {
-    if (!Array.isArray(sentences)) return [];
-    if (sentences.length === 0) return [];
-    const first = sentences[0];
-    if (typeof first === "string") {
-      return sentences;
-    }
-    if (typeof first === "object") {
-      // find probable key containing text
-      if ("sentence" in first) {
-        return sentences.map((s) => (s && s.sentence) || "");
-      }
-      // fallback: take first string-like property
-      return sentences.map((s) => {
-        const keys = Object.keys(s);
-        for (const k of keys) {
-          if (typeof s[k] === "string") return s[k];
-        }
-        return "";
-      });
-    }
-    return sentences.map(String);
-  };
+  // --- OPTIMIZED DATA PROCESSING (useMemo) ---
+  // This calculates words/pages ONLY when rawSentences changes.
+  // It prevents the browser from re-calculating on every UI toggle.
+  const { allWords, pages } = useMemo(() => {
+    if (!rawSentences || rawSentences.length === 0) return { allWords: [], pages: [] };
 
-  // After rawSentences changes: build words (starting at preface) and paginate
-  useEffect(() => {
-    if (!rawSentences || rawSentences.length === 0) {
-      setAllWords([]);
-      setPages([]);
-      setCurrentPage(0);
-      setCurrentWordIndex(0);
-      return;
-    }
+    // 1. Normalize
+    const sentenceTexts = rawSentences.map(s => {
+      if (typeof s === "string") return s;
+      if (typeof s === "object") return s.sentence || Object.values(s).find(v => typeof v === "string") || "";
+      return String(s);
+    });
 
-    console.log("📌 Normalizing sentences from backend...");
-    const sentenceTexts = normalizeSentences(rawSentences);
-
-    // Make a big string of full book text
     const fullText = sentenceTexts.join(" ");
 
-    // Find preface/introduction start
+    // 2. Preface Detection
     const lower = fullText.toLowerCase();
-    let prefacePos = -1;
     const prefaceMatch = lower.match(/preface|introduction/);
-    if (prefaceMatch) {
-      prefacePos = lower.indexOf(prefaceMatch[0]);
-    }
-    const startFrom = prefacePos >= 0 ? prefacePos : 0;
-    console.log("🔍 Preface position in full text:", prefacePos);
+    const startFrom = prefaceMatch ? lower.indexOf(prefaceMatch[0]) : 0;
 
-    // Extract substring from preface start
-    const textFromPreface = fullText.slice(startFrom);
-
-    // Clean text: keep word characters and common punctuation only replaced with spaces for splitting
-    // but keep apostrophes so contractions remain intact.
-    const cleaned = textFromPreface.replace(/[^\w\s’'`-]/g, " "); // remove odd punctuation but keep apostrophes/hyphens
-    // split into words
+    // 3. Clean & Tokenize (Memory Efficient)
+    const cleaned = fullText.slice(startFrom).replace(/[^\w\s’'`-]/g, " ");
     const words = cleaned.split(/\s+/).filter(Boolean);
 
-    console.log("🔡 Total words from (preface..end):", words.length);
-    // paginate into pages of PAGE_WORD_COUNT words
-    const newPages = [];
+    // 4. Paginate
+    const p = [];
     for (let i = 0; i < words.length; i += PAGE_WORD_COUNT) {
-      newPages.push(words.slice(i, i + PAGE_WORD_COUNT));
+      p.push(words.slice(i, i + PAGE_WORD_COUNT));
     }
 
-    setAllWords(words);
-    setPages(newPages);
-    setCurrentPage(0);
-    setCurrentWordIndex(0);
-    setReading(false);
-    clearReaderInterval();
+    return { allWords: words, pages: p };
   }, [rawSentences]);
 
-  // When WPM or reading changes, restart interval appropriately for speed mode
-  useEffect(() => {
-    if (mode !== "speed") {
-      // ensure no interval running in book mode
-      clearReaderInterval();
-      return;
-    }
-
-    // If reading set true, start interval
-    if (reading) {
-      clearReaderInterval();
-      const ms = Math.max(10, Math.round(60000 / Math.max(1, wpm))); // ms per word
-      intervalRef.current = setInterval(() => {
-        setCurrentWordIndex((prev) => {
-          if (prev >= allWords.length - 1) {
-            clearReaderInterval();
-            setReading(false);
-            return prev;
-          }
-          // update page if needed
-          const next = prev + 1;
-          const nextPage = Math.floor(next / PAGE_WORD_COUNT);
-          if (nextPage !== currentPage) {
-            setCurrentPage(nextPage);
-          }
-          return next;
-        });
-      }, ms);
-    } else {
-      clearReaderInterval();
-    }
-
-    // cleanup on unmount or changes
-    return () => clearReaderInterval();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reading, wpm, mode, allWords.length]); // watch mode so intervals are toggled correctly
-
-  // Debug helper: logs
-  useEffect(() => {
-    console.log("📚 Pages count:", pages.length);
-  }, [pages]);
-
-  // Upload handler
+  // --- FILE UPLOAD (Crash-Proofed) ---
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    console.log("📄 Selected file:", file.name);
+    // PREVENT CRASH: Clear old data immediately to free RAM
     setLoading(true);
-    setRawSentences([]);
-    setPages([]);
-    setAllWords([]);
-    setCurrentPage(0);
-    setCurrentWordIndex(0);
     setReading(false);
     clearReaderInterval();
+    setRawSentences([]); // Triggers cleanup of allWords/pages
+    setCurrentPage(0);
+    setCurrentWordIndex(0);
 
     const formData = new FormData();
     formData.append("file", file);
@@ -176,184 +78,106 @@ export default function Dashboard() {
         body: formData,
       });
 
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Upload failed: ${res.status} ${txt}`);
-      }
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
 
       const data = await res.json();
-      console.log("📩 Backend response keys:", Object.keys(data));
       
-      // Backend may return data.sentences as array of objects OR data.pages — handle both:
-      if (Array.isArray(data.pages) && data.pages.length > 0) {
-        // If backend gave pages already, convert pages -> sentences array without page markers:
-        // We'll convert pages array into sentences-like array of strings joined by space.
-        // But per user's request we will paginate ourselves using PAGE_WORD_COUNT; still use preface detection on joined pages.
-        // Convert pages (strings) into sentence-like array for normalization
-        const sentencesFromPages = data.pages.map((p) => (typeof p === "string" ? p : String(p)));
-        setRawSentences(sentencesFromPages);
-      } else if (Array.isArray(data.sentences) && data.sentences.length > 0) {
+      // Support various backend formats
+      if (Array.isArray(data.pages)) {
+        setRawSentences(data.pages);
+      } else if (Array.isArray(data.sentences)) {
         setRawSentences(data.sentences);
-      } else {
-        // If backend returns a long string in data.text
-        if (typeof data.text === "string" && data.text.length > 0) {
-          setRawSentences([data.text]);
-        } else {
-          console.warn("⚠️ Backend returned unexpected response format:", data);
-          setRawSentences([]);
-        }
+      } else if (data.text) {
+        setRawSentences([data.text]);
       }
     } catch (err) {
-      console.error("❌ Upload error:", err);
-      alert("Upload failed: " + (err.message || err));
+      console.error("❌ Error:", err);
+      alert("Extraction failed. The file may be too large for the current server limits.");
     } finally {
       setLoading(false);
     }
   };
 
-  // Controls for speed reader:
-  const toggleReading = () => {
-    if (!allWords.length) return;
-    setReading((r) => !r);
-  };
-
-  const jumpPrevWord = () => {
-    setReading(false);
-    clearReaderInterval();
-    setCurrentWordIndex((i) => Math.max(0, i - 1));
-    setCurrentPage(Math.floor(Math.max(0, currentWordIndex - 1) / PAGE_WORD_COUNT));
-  };
-  const jumpNextWord = () => {
-    setReading(false);
-    clearReaderInterval();
-    setCurrentWordIndex((i) => Math.min(allWords.length - 1, i + 1));
-    setCurrentPage(Math.floor(Math.min(allWords.length - 1, currentWordIndex + 1) / PAGE_WORD_COUNT));
-  };
-
-  // Book view page navigation
-  const goToPrevPage = () => {
-    setReading(false);
-    clearReaderInterval();
-    setCurrentPage((p) => Math.max(0, p - 1));
-    // update currentWordIndex to first word of page
-    setCurrentWordIndex((_) => Math.max(0, (Math.max(0, currentPage - 1)) * PAGE_WORD_COUNT));
-  };
-
-  const goToNextPage = () => {
-    setReading(false);
-    clearReaderInterval();
-    setCurrentPage((p) => Math.min(pages.length - 1, p + 1));
-    setCurrentWordIndex((_) => Math.min(allWords.length - 1, Math.min(pages.length - 1, currentPage + 1) * PAGE_WORD_COUNT));
-  };
-
-  // Render page text with first letter bolded per word
-  const renderBoldFirstLetter = (pageWords = []) => {
-    return pageWords.map((w, i) => {
-      const first = w.charAt(0);
-      const rest = w.slice(1);
-      return (
-        <span key={i} style={{ marginRight: 6 }}>
-          <strong>{first}</strong>{rest}
-          {" "}
-        </span>
-      );
-    });
-  };
-
-  // When mode changes, ensure reading state/interval adjusted
+  // --- SPEED READER ENGINE ---
   useEffect(() => {
-    setReading(false);
-    clearReaderInterval();
-  }, [mode]);
-
-  // When currentPage changes, set currentWordIndex to page start (book view expectation)
-  useEffect(() => {
-    if (mode === "book" && pages.length > 0) {
-      const idx = Math.min(pages.length - 1, Math.max(0, currentPage));
-      setCurrentWordIndex(idx * PAGE_WORD_COUNT);
+    if (mode === "speed" && reading && allWords.length > 0) {
+      const ms = Math.max(15, Math.round(60000 / wpm));
+      intervalRef.current = setInterval(() => {
+        setCurrentWordIndex((prev) => {
+          if (prev >= allWords.length - 1) {
+            setReading(false);
+            return prev;
+          }
+          const next = prev + 1;
+          // Sync page index with word index
+          const nextPage = Math.floor(next / PAGE_WORD_COUNT);
+          if (nextPage !== currentPage) setCurrentPage(nextPage);
+          return next;
+        });
+      }, ms);
+    } else {
+      clearReaderInterval();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, mode]);
+    return () => clearReaderInterval();
+  }, [reading, wpm, mode, allWords.length, currentPage, clearReaderInterval]);
+
+  // --- HELPERS ---
+  const renderPage = useCallback((pageWords = []) => {
+    return pageWords.map((w, i) => (
+      <span key={i} style={{ marginRight: 6 }}>
+        <strong>{w.charAt(0)}</strong>{w.slice(1)}{" "}
+      </span>
+    ));
+  }, []);
 
   return (
     <div className="dashboard-root">
-      <h1>📚 QuickRead — Book View | Speed Reader</h1>
+      <h1>📚 QuickRead</h1>
 
       <div className="upload-row">
         <input type="file" accept="application/pdf" onChange={handleFileUpload} />
-        {loading && <span className="loading-text"> Extracting PDF... ⏳</span>}
+        {loading && <span className="loading-text"> Processing Large Document... ⏳</span>}
       </div>
 
-      {!!pages.length ? (
+      {pages.length > 0 && (
         <div className="modes-wrapper">
-          {/* Mode tabs */}
           <div className="mode-tabs">
-            <button className={mode === "book" ? "tab active" : "tab"} onClick={() => setMode("book")}>
-              📘 Book View
-            </button>
-            <button className={mode === "speed" ? "tab active" : "tab"} onClick={() => setMode("speed")}>
-              ⚡ Speed Reader
-            </button>
+            <button className={mode === "book" ? "active" : ""} onClick={() => setMode("book")}>📘 Book View</button>
+            <button className={mode === "speed" ? "active" : ""} onClick={() => setMode("speed")}>⚡ Speed Reader</button>
           </div>
 
-          {/* Content area */}
           <div className="content-area">
             {mode === "book" ? (
-              <>
+              <div className="book-container">
                 <div className="book-header">
-                  <div>Page {currentPage + 1} / {pages.length}</div>
-                  <div className="book-controls">
-                    <button onClick={goToPrevPage} disabled={currentPage <= 0}>⬅ Prev Page</button>
-                    <button onClick={() => { setMode("speed"); /* go to corresponding speed reader word */ setCurrentWordIndex(currentPage * PAGE_WORD_COUNT); }}>Switch to Speed Reader</button>
-                    <button onClick={goToNextPage} disabled={currentPage >= pages.length - 1}>Next Page ➡</button>
+                  <span>Page {currentPage + 1} of {pages.length}</span>
+                  <div className="btn-group">
+                    <button disabled={currentPage === 0} onClick={() => {
+                        const newPage = currentPage - 1;
+                        setCurrentPage(newPage);
+                        setCurrentWordIndex(newPage * PAGE_WORD_COUNT);
+                    }}>Prev</button>
+                    <button disabled={currentPage >= pages.length - 1} onClick={() => {
+                        const newPage = currentPage + 1;
+                        setCurrentPage(newPage);
+                        setCurrentWordIndex(newPage * PAGE_WORD_COUNT);
+                    }}>Next</button>
                   </div>
                 </div>
-
-                <div className="book-view-area">
-                  {renderBoldFirstLetter(pages[currentPage])}
-                </div>
-              </>
+                <div className="book-view-area">{renderPage(pages[currentPage])}</div>
+              </div>
             ) : (
-              <>
-                <div className="speed-header">
-                  <div>Word {currentWordIndex + 1} / {allWords.length}</div>
-                  <div className="speed-controls">
-                    <label>WPM: </label>
-                    <input
-                      type="number"
-                      min={50}
-                      max={2000}
-                      value={wpm}
-                      onChange={(e) => setWpm(Math.max(1, Number(e.target.value) || 300))}
-                      style={{ width: 90 }}
-                    />
-                  </div>
+              <div className="speed-container">
+                <div className="big-word-display">
+                  <div className="focus-word">{allWords[currentWordIndex]}</div>
                 </div>
-
-                <div className="speed-reader-area">
-                  <div className="big-word">
-                    {allWords[currentWordIndex] || ""}
-                  </div>
+                <div className="speed-controls">
+                    <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} />
+                    <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
                 </div>
-
-                <div className="speed-buttons">
-                  <button onClick={() => { setMode("book"); }}>Back to Book View</button>
-
-                  <button onClick={jumpPrevWord} disabled={currentWordIndex <= 0}>⬅ Prev Word</button>
-
-                  <button onClick={toggleReading} disabled={!allWords.length}>
-                    {reading ? "Pause ⏸" : "Start ▶️"}
-                  </button>
-
-                  <button onClick={jumpNextWord} disabled={currentWordIndex >= allWords.length - 1}>Next ➡</button>
-                </div>
-              </>
+              </div>
             )}
           </div>
-        </div>
-      ) : (
-        <div className="placeholder">
-          <p>Upload a PDF to begin. Pages will be split at {PAGE_WORD_COUNT} words per page and reading will start from Preface / Introduction if present.</p>
         </div>
       )}
     </div>
