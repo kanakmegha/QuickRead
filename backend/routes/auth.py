@@ -1,79 +1,67 @@
-""" from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from database import supabase
 
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["auth"])
 
+
+# -------------------------
+# Models
+# -------------------------
 class AuthRequest(BaseModel):
     email: str
     password: str
 
 
+# -------------------------
+# Routes
+# -------------------------
 @router.post("/signup")
 def signup(user: AuthRequest):
-    auth = supabase.auth.sign_up({
-        "email": user.email,
-        "password": user.password
-    })
+    try:
+        response = supabase.auth.sign_up({
+            "email": user.email,
+            "password": user.password
+        })
 
-    if auth.get("error"):
-        raise HTTPException(status_code=400, detail=str(auth["error"]))
+        if response.user is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Signup failed"
+            )
 
-    return {"message": "Signup success. Please check email to confirm account."}
+        return {
+            "message": "Signup successful. Please verify your email."
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/login")
 def login(user: AuthRequest):
-    auth = supabase.auth.sign_in_with_password({
-        "email": user.email,
-        "password": user.password
-    })
-
-    if auth.get("error"):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    return {"token": auth["session"]["access_token"]}
- """
- # db.py (or auth.py)
-import os
-import psycopg2
-import psycopg2.extras
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Load DB URL from .env
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise Exception("DATABASE_URL not found in environment variables!")
-
-def get_connection():
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        return conn
-    except Exception as e:
-        print("❌ Database Connection Error:", e)
-        return None
+        response = supabase.auth.sign_in_with_password({
+            "email": user.email,
+            "password": user.password
+        })
 
-def execute(query, params=None):
-    conn = get_connection()
-    if not conn:
-        return None
+        if response.session is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid email or password"
+            )
 
-    try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(query, params)
-        if query.strip().lower().startswith("select"):
-            result = cur.fetchall()
-        else:
-            result = {"status": "success"}
-        conn.commit()
-        print("📌 Query Executed:", result)
-        return result
+        return {
+            "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token,
+            "user": response.user.email
+        }
+
     except Exception as e:
-        print("⚠️ Query Error:", e)
-        return None
-    finally:
-        cur.close()
-        conn.close()
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@router.get("/health")
+def auth_health():
+    return {"status": "auth service running"}
