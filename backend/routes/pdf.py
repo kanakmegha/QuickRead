@@ -1,64 +1,47 @@
-import os
-import json
-import io
-import gc
-import logging
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse
-import pdfplumber
+import io, gc, logging, pdfplumber
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from database import supabase_admin
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
-
 BUCKET_NAME = "Books"
 
-@router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files allowed")
-
-    # Read the file into memory once
+@router.post("/upload_to_storage")
+async def upload_to_storage(file: UploadFile = File(...)):
+    # STEP 1: Just upload the file to Supabase and return the path
+    # This keeps the initial request very fast
     content = await file.read()
-    
-    # 1. Background Upload to Supabase (Optional: Move this to a background task if it slows down UI)
+    storage_path = f"uploads/{file.filename}"
     try:
-        storage_path = f"uploads/{file.filename}"
         supabase_admin.storage.from_(BUCKET_NAME).upload(
-            storage_path, 
-            content, 
-            {"content-type": "application/pdf"}
+            storage_path, content, {"content-type": "application/pdf", "upsert": "true"}
         )
+        return {"storage_path": storage_path}
     except Exception as e:
-        logger.error(f"Supabase Upload Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # 2. Generator function to stream pages to Frontend
-    def stream_pdf_content():
-        try:
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                total_pages = len(pdf.pages)
-                
-                for i in range(total_pages):
-                    page = pdf.pages[i]
-                    text = page.extract_text()
-                    
-                    if text:
-                        # Send as an NDJSON line
-                        yield json.dumps({
-                            "page_index": i + 1,
-                            "total_pages": total_pages,
-                            "text": text
-                        }) + "\n"
-                    
-                    # Memory cleanup
-                    pdf.pages[i] = None
-                    if i % 20 == 0:
-                        gc.collect()
-                        
-        except Exception as e:
-            logger.error(f"Extraction Error: {e}")
-            yield json.dumps({"error": "Processing interrupted"}) + "\n"
-        finally:
-            gc.collect()
-
-    return StreamingResponse(stream_pdf_content(), media_type="application/x-ndjson")
+@router.get("/extract_batch")
+async def extract_batch(path: str, start_page: int, batch_size: int = 5):
+    # STEP 2: Extract only a small 'window' of pages
+    try:
+        # Download the file from Supabase
+        file_data = supabase_admin.storage.from_(BUCKET_NAME).download(path)
+        
+        pages_text = []
+        with pdfplumber.open(io.BytesIO(file_data)) as pdf:
+            total = len(pdf.pages)
+            end_page = min(start_page + batch_size, total)
+            
+            for i in range(start_page, end_page):
+                text = pdf.pages[i].extract_text() or ""
+                pages_text.append(text)
+            
+            return {
+                "pages": pages_text,
+                "total_pages": total,
+                "next_start": end_page if end_page < total else None
+            }
+    except Exception as e:
+        gc.collect()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        gc.collect()
