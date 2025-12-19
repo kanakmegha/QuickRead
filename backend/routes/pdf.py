@@ -1,6 +1,10 @@
-import fitz  # This is PyMuPDF
-import io, gc, json
 from fastapi import APIRouter, UploadFile, File
+import fitz  # PyMuPDF
+import json
+import gc
+
+# THIS LINE IS MISSING:
+router = APIRouter()
 
 @router.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
