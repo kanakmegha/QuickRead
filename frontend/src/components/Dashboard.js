@@ -15,7 +15,13 @@ export default function Dashboard() {
 
   const backendUrl = "https://quickread-bggq.onrender.com";
 
-  // --- MEMORY OPTIMIZED DATA CALCULATION ---
+  const clearReaderInterval = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
   const { allWords, pages } = useMemo(() => {
     if (rawSentences.length === 0) return { allWords: [], pages: [] };
 
@@ -27,14 +33,14 @@ export default function Dashboard() {
     const cleaned = fullText.slice(startFrom).replace(/[^\w\s’'`-]/g, " ");
     const words = cleaned.split(/\s+/).filter(Boolean);
 
-    const p = [];
+    const newPages = [];
     for (let i = 0; i < words.length; i += PAGE_WORD_COUNT) {
-      p.push(words.slice(i, i + PAGE_WORD_COUNT));
+      newPages.push(words.slice(i, i + PAGE_WORD_COUNT));
     }
-    return { allWords: words, pages: p };
+
+    return { allWords: words, pages: newPages };
   }, [rawSentences]);
 
-  // --- STREAMING UPLOAD HANDLER ---
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -43,14 +49,16 @@ export default function Dashboard() {
     setRawSentences([]); 
     setCurrentPage(0);
     setCurrentWordIndex(0);
+    setReading(false);
+    clearReaderInterval();
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
       const response = await fetch(`${backendUrl}/upload`, {
-          method: "POST",
-          body: formData,
+        method: "POST",
+        body: formData,
       });
 
       const reader = response.body.getReader();
@@ -63,33 +71,36 @@ export default function Dashboard() {
 
         const chunk = decoder.decode(value, { stream: true });
         const lines = (partialChunk + chunk).split("\n");
-        partialChunk = lines.pop(); 
+        partialChunk = lines.pop(); // Logic Fix: Store incomplete line for next chunk
 
-        const extractedTexts = lines
+        const pageTexts = lines
           .filter(l => l.trim())
           .map(l => {
             try { return JSON.parse(l).text; } 
-            catch(e) { return ""; }
-          });
+            catch(e) { return null; }
+          })
+          .filter(t => t !== null);
 
-        if (extractedTexts.length > 0) {
-          setRawSentences(prev => [...prev, ...extractedTexts]);
+        if (pageTexts.length > 0) {
+          setRawSentences(prev => [...prev, ...pageTexts]);
         }
       }
     } catch (err) {
-      console.error("Stream failed", err);
+      console.error("Upload error:", err);
+      alert("Extraction interrupted. Check your internet connection.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- SPEED READER ENGINE ---
   useEffect(() => {
     if (mode === "speed" && reading && allWords.length > 0) {
-      const ms = Math.max(10, Math.round(60000 / wpm));
+      clearReaderInterval();
+      const ms = Math.max(10, Math.round(60000 / Math.max(1, wpm)));
       intervalRef.current = setInterval(() => {
         setCurrentWordIndex((prev) => {
           if (prev >= allWords.length - 1) {
+            clearReaderInterval();
             setReading(false);
             return prev;
           }
@@ -100,60 +111,69 @@ export default function Dashboard() {
         });
       }, ms);
     } else {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearReaderInterval();
     }
-
-    // FIXED CLEANUP SYNTAX
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => clearReaderInterval();
   }, [reading, wpm, mode, allWords.length, currentPage]);
 
-  const renderPage = (pageWords = []) => {
+  const renderBoldFirstLetter = (pageWords = []) => {
     return pageWords.map((w, i) => (
       <span key={i} style={{ marginRight: 6 }}>
-        <strong>{w.charAt(0)}</strong>{w.slice(1)} 
+        <strong>{w.charAt(0)}</strong>{w.slice(1)}{" "}
       </span>
     ));
   };
 
   return (
     <div className="dashboard-root">
-      <h1>📚 QuickRead</h1>
+      <h1>📚 QuickRead — Book View | Speed Reader</h1>
       <div className="upload-row">
         <input type="file" accept="application/pdf" onChange={handleFileUpload} />
-        {loading && <span> 🔄 Loading: {rawSentences.length} pages processed...</span>}
+        {loading && <span className="loading-text"> Extracting PDF ({rawSentences.length} pages)... ⏳</span>}
       </div>
 
-      {pages.length > 0 && (
-        <div className="content-area">
+      {!!pages.length ? (
+        <div className="modes-wrapper">
           <div className="mode-tabs">
-            <button onClick={() => setMode("book")} className={mode === "book" ? "active" : ""}>Book View</button>
-            <button onClick={() => setMode("speed")} className={mode === "speed" ? "active" : ""}>Speed Reader</button>
+            <button className={mode === "book" ? "tab active" : "tab"} onClick={() => setMode("book")}>📘 Book View</button>
+            <button className={mode === "speed" ? "tab active" : "tab"} onClick={() => setMode("speed")}>⚡ Speed Reader</button>
           </div>
 
-          {mode === "book" ? (
-            <div className="book-view">
-              <div className="controls">
-                <button onClick={() => setCurrentPage(p => Math.max(0, p-1))}>Prev</button>
-                <span>Page {currentPage + 1} of {pages.length}</span>
-                <button onClick={() => setCurrentPage(p => Math.min(pages.length-1, p+1))}>Next</button>
-              </div>
-              <div className="text-display">{renderPage(pages[currentPage])}</div>
-            </div>
-          ) : (
-            <div className="speed-view">
-              <div className="word-display" style={{fontSize: '3rem', textAlign: 'center', margin: '40px 0'}}>
-                {allWords[currentWordIndex]}
-              </div>
-              <div className="speed-controls" style={{textAlign: 'center'}}>
-                <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
-                <input type="number" value={wpm} onChange={(e) => setWpm(e.target.value)} style={{width: '80px', marginLeft: '10px'}} />
-                <span> WPM</span>
-              </div>
-            </div>
-          )}
+          <div className="content-area">
+            {mode === "book" ? (
+              <>
+                <div className="book-header">
+                  <div>Page {currentPage + 1} / {pages.length}</div>
+                  <div className="book-controls">
+                    <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage <= 0}>⬅ Prev Page</button>
+                    <button onClick={() => setMode("speed")}>Switch to Speed Reader</button>
+                    <button onClick={() => setCurrentPage(p => Math.min(pages.length - 1, p + 1))} disabled={currentPage >= pages.length - 1}>Next Page ➡</button>
+                  </div>
+                </div>
+                <div className="book-view-area">{renderBoldFirstLetter(pages[currentPage])}</div>
+              </>
+            ) : (
+              <>
+                <div className="speed-header">
+                  <div>Word {currentWordIndex + 1} / {allWords.length}</div>
+                  <div className="speed-controls">
+                    <label>WPM: </label>
+                    <input type="number" value={wpm} onChange={(e) => setWpm(Math.max(1, Number(e.target.value)))} style={{ width: 90 }} />
+                  </div>
+                </div>
+                <div className="speed-reader-area"><div className="big-word">{allWords[currentWordIndex] || ""}</div></div>
+                <div className="speed-buttons">
+                  <button onClick={() => setMode("book")}>Back to Book View</button>
+                  <button onClick={() => setCurrentWordIndex(i => Math.max(0, i - 1))}>⬅ Prev Word</button>
+                  <button onClick={() => setReading(!reading)}>{reading ? "Pause ⏸" : "Start ▶️"}</button>
+                  <button onClick={() => setCurrentWordIndex(i => Math.min(allWords.length - 1, i + 1))}>Next ➡</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
+      ) : (
+        <div className="placeholder"><p>Upload a PDF to begin. {PAGE_WORD_COUNT} words per page.</p></div>
       )}
     </div>
   );
