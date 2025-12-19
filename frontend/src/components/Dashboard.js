@@ -42,44 +42,55 @@ export default function Dashboard() {
     return { allWords: words, pages: newPages };
   }, [rawSentences]);
 
+  // Logic: Stream data from backend page-by-page
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-  
+
     setLoading(true);
-    setRawSentences([]); // Reset for new book
+    setRawSentences([]); // Clear state for new upload
     setCurrentPage(0);
     setCurrentWordIndex(0);
     setReading(false);
     clearReaderInterval();
-  
+
     const formData = new FormData();
     formData.append("file", file);
-  
+
     try {
-      // We use a standard fetch here. On mobile, this is prioritized 
-      // better by the browser's networking engine.
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
       });
-  
-      if (!response.ok) throw new Error("Server is overloaded");
-  
-      const data = await response.json();
-  
-      if (data.pages && data.pages.length > 0) {
-        // data.pages is our list of strings (one per PDF page)
-        setRawSentences(data.pages);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let partialChunk = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = (partialChunk + chunk).split("\n");
+        partialChunk = lines.pop(); 
+
+        const pageTexts = lines
+          .filter(l => l.trim())
+          .map(l => JSON.parse(l).text);
+
+        if (pageTexts.length > 0) {
+          setRawSentences(prev => [...prev, ...pageTexts]);
+        }
       }
-  
     } catch (err) {
       console.error("Upload error:", err);
-      alert("Mobile connection lost or PDF too large for free server. Try a smaller file.");
+      alert("Extraction interrupted. Please try a smaller file or check connection.");
     } finally {
       setLoading(false);
     }
   };
+
   useEffect(() => {
     if (mode === "speed" && reading && allWords.length > 0) {
       clearReaderInterval();
