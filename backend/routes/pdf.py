@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import fitz
 import json
@@ -7,27 +7,29 @@ from database import supabase_admin
 
 router = APIRouter()
 
-# Helper function to save to Supabase in the background
-def save_to_supabase(content, filename):
+# Logic: Totally separate the Supabase work from the Phone's work
+def upload_to_supabase_logic(content, filename):
     try:
         supabase_admin.storage.from_("Books").upload(
             path=f"uploads/{filename}",
             file=content,
-            file_options={"content-type": "application/pdf", "upsert": "true"}
+            file_options={"upsert": "true"}
         )
-    except Exception as e:
-        print(f"Background Upload Error: {e}")
+    except:
+        pass
 
 @router.post("/upload")
 async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    # 1. Read the file
     content = await file.read()
     
-    # 1. Start the Supabase save in the background (Doesn't block the stream!)
-    background_tasks.add_task(save_to_supabase, content, file.filename)
+    # 2. Push Supabase to the background IMMEDIATELY
+    background_tasks.add_task(upload_to_supabase_logic, content, file.filename)
 
     def stream_pdf_content():
         doc = None
         try:
+            # 3. Open PDF instantly
             doc = fitz.open(stream=content, filetype="pdf")
             total = len(doc)
             
@@ -35,22 +37,32 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
                 page = doc.load_page(i)
                 text = page.get_text("text")
                 
-                # 2. Yield data IMMEDIATELY to keep the mobile connection alive
-                yield json.dumps({
+                # 4. Use "ndjson" format - send line by line
+                data = json.dumps({
                     "page_index": i + 1,
                     "total_pages": total,
                     "text": text
                 }) + "\n"
                 
-                if i % 10 == 0:
+                yield data
+                
+                # Cleanup every few pages to save Render RAM
+                if i % 5 == 0:
                     gc.collect()
+                    
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
         finally:
             if doc: doc.close()
             gc.collect()
 
-    # 3. Add a specialized header to tell mobile browsers NOT to buffer
+    # 5. Critical Headers for Mobile Stability
     return StreamingResponse(
-        stream_pdf_content(), 
+        stream_pdf_content(),
         media_type="application/x-ndjson",
-        headers={"X-Accel-Buffering": "no"} 
+        headers={
+            "Connection": "keep-alive",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Tells Render not to buffer
+        }
     )

@@ -56,13 +56,20 @@ export default function Dashboard() {
     formData.append("file", file);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second limit
+
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
+        signal: controller.signal, // Connect the timeout
         mode: 'cors',
-        cache: 'no-store', // Crucial for mobile
-        priority: 'high',  // Tells the browser this is the most important task
+        headers: {
+            'Accept': 'application/x-ndjson',
+        },
       });
+
+      clearTimeout(timeoutId);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
