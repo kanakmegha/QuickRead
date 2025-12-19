@@ -59,6 +59,8 @@ export default function Dashboard() {
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
+        cache: "no-store", // Prevents the phone from trying to buffer the whole thing
+        mode: "cors",
       });
 
       const reader = response.body.getReader();
