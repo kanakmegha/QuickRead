@@ -74,12 +74,14 @@ export default function Dashboard() {
       // 3. SEND URL TO RENDER (FASTAPI)
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_url: publicUrl,
-          file_name: file.name
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ 
+            file_url: publicUrl, 
+            file_name: file.name 
         }),
-      });
+    });
 
       if (!response.ok) throw new Error("Server error");
 
