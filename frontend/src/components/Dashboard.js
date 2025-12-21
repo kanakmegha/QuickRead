@@ -23,6 +23,7 @@ export default function Dashboard() {
     }
   };
 
+  // Restored Visual Logic: Processes text for the Reader and Book View
   const { allWords, pages } = useMemo(() => {
     if (rawSentences.length === 0) return { allWords: [], pages: [] };
 
@@ -54,10 +55,8 @@ export default function Dashboard() {
     clearReaderInterval();
 
     try {
-      // 1. UPLOAD DIRECTLY TO SUPABASE
-      // This bypasses Render for the heavy upload, fixing mobile "Interrupted" errors
+      // 1. Direct Upload to Supabase (Workday Method)
       const filePath = `uploads/${Date.now()}_${file.name}`;
-      // This version passes the Vercel build
       const { error: uploadError } = await supabase_admin
         .storage
         .from("Books")
@@ -65,13 +64,13 @@ export default function Dashboard() {
 
       if (uploadError) throw uploadError;
 
-      // 2. GET THE PUBLIC URL
+      // 2. Get the Public URL
       const { data: { publicUrl } } = supabase_admin
         .storage
         .from("Books")
         .getPublicUrl(filePath);
 
-      // 3. SEND URL TO RENDER (FASTAPI)
+      // 3. Send URL to Render Backend
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -83,7 +82,7 @@ export default function Dashboard() {
 
       if (!response.ok) throw new Error("Server error");
 
-      // 4. STREAMING READER
+      // 4. Streaming Text Extraction (Visual Update as it loads)
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let partialChunk = "";
@@ -109,13 +108,14 @@ export default function Dashboard() {
         }
       }
     } catch (err) {
-      console.error("Extraction error:", err);
-      alert("Something went wrong. Check your connection or Supabase settings.");
+      console.error("Upload error:", err);
+      alert("Extraction failed. Check connection or Supabase settings.");
     } finally {
       setLoading(false);
     }
   };
 
+  // Speed Reader Movement Logic
   useEffect(() => {
     if (mode === "speed" && reading && allWords.length > 0) {
       clearReaderInterval();
@@ -139,6 +139,7 @@ export default function Dashboard() {
     return () => clearReaderInterval();
   }, [reading, wpm, mode, allWords.length, currentPage]);
 
+  // Visual: Bold First Letter logic for Book View
   const renderBoldFirstLetter = (pageWords = []) => {
     return pageWords.map((w, i) => (
       <span key={i} style={{ marginRight: 6 }}>
@@ -150,12 +151,13 @@ export default function Dashboard() {
   return (
     <div className="dashboard-root">
       <h1>📚 QuickRead — Book View | Speed Reader</h1>
+      
       <div className="upload-row">
         <input type="file" accept="application/pdf" onChange={handleFileUpload} />
-        {loading && <span className="loading-text"> Processing PDF ({rawSentences.length} pages extracted)... ⏳</span>}
+        {loading && <span className="loading-text"> Extracting PDF ({rawSentences.length} pages)... ⏳</span>}
       </div>
 
-      {!!pages.length ? (
+      {pages.length > 0 ? (
         <div className="modes-wrapper">
           <div className="mode-tabs">
             <button className={mode === "book" ? "tab active" : "tab"} onClick={() => setMode("book")}>📘 Book View</button>
@@ -169,11 +171,13 @@ export default function Dashboard() {
                   <div>Page {currentPage + 1} / {pages.length}</div>
                   <div className="book-controls">
                     <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage <= 0}>⬅ Prev</button>
-                    <button onClick={() => setMode("speed")}>Switch to Speed</button>
+                    <button onClick={() => setMode("speed")}>Speed Mode</button>
                     <button onClick={() => setCurrentPage(p => Math.min(pages.length - 1, p + 1))} disabled={currentPage >= pages.length - 1}>Next ➡</button>
                   </div>
                 </div>
-                <div className="book-view-area">{renderBoldFirstLetter(pages[currentPage])}</div>
+                <div className="book-view-area">
+                  {renderBoldFirstLetter(pages[currentPage])}
+                </div>
               </>
             ) : (
               <>
@@ -184,11 +188,13 @@ export default function Dashboard() {
                     <input type="number" value={wpm} onChange={(e) => setWpm(Math.max(1, Number(e.target.value)))} style={{ width: 80 }} />
                   </div>
                 </div>
-                <div className="speed-reader-area"><div className="big-word">{allWords[currentWordIndex] || ""}</div></div>
+                <div className="speed-reader-area">
+                  <div className="big-word">{allWords[currentWordIndex] || ""}</div>
+                </div>
                 <div className="speed-buttons">
-                  <button onClick={() => setMode("book")}>Book View</button>
+                  <button onClick={() => setMode("book")}>Back to Book</button>
                   <button onClick={() => setCurrentWordIndex(i => Math.max(0, i - 1))}>⬅ Prev</button>
-                  <button onClick={() => setReading(!reading)}>{reading ? "Pause" : "Start"}</button>
+                  <button onClick={() => setReading(!reading)}>{reading ? "Pause ⏸" : "Start ▶️"}</button>
                   <button onClick={() => setCurrentWordIndex(i => Math.min(allWords.length - 1, i + 1))}>Next ➡</button>
                 </div>
               </>
@@ -196,7 +202,9 @@ export default function Dashboard() {
           </div>
         </div>
       ) : (
-        <div className="placeholder"><p>Upload a PDF to start reading. {PAGE_WORD_COUNT} words per page.</p></div>
+        <div className="placeholder">
+          <p>Upload a PDF to begin. {PAGE_WORD_COUNT} words per page.</p>
+        </div>
       )}
     </div>
   );
