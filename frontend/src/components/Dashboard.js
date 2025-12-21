@@ -57,7 +57,8 @@ export default function Dashboard() {
       // 1. UPLOAD DIRECTLY TO SUPABASE
       // This bypasses Render for the heavy upload, fixing mobile "Interrupted" errors
       const filePath = `uploads/${Date.now()}_${file.name}`;
-      const { data: uploadData, error: uploadError } = await supabase_admin
+      // This version passes the Vercel build
+      const { error: uploadError } = await supabase_admin
         .storage
         .from("Books")
         .upload(filePath, file, { upsert: true });
