@@ -109,8 +109,10 @@ export default function Dashboard() {
         }
       }
     } catch (err) {
-      console.error("Extraction error:", err);
-      alert("Something went wrong. Check your connection or Supabase settings.");
+      console.error("FULL ERROR OBJECT:", err);
+      // This alert will show the actual error message
+      alert("Error Name: " + err.name + "\nMessage: " + err.message);
+    
     } finally {
       setLoading(false);
     }
