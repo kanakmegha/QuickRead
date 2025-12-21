@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
 // We use the exact names from your reference, prefixed for React
-const url = process.env.SUPABASE_URL;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY; 
+const url = process.env.REACT_APP_SUPABASE_URL;
+const key = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY; 
 
 if (!url || !key) {
     console.error("Supabase environment variables are missing!");
