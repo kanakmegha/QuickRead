@@ -44,30 +44,69 @@ export default function Dashboard() {
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
+  
     setLoading(true);
-    setRawSentences([]); 
-    setCurrentPage(0);
-    setCurrentWordIndex(0);
-    setReading(false);
-    clearReaderInterval();
-
-    const formData = new FormData();
-    formData.append("file", file);
-
+    setRawSentences([]);
+    
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second limit
-
+      const filePath = `uploads/${Date.now()}_${file.name}`;
+  
+      // 1. UPLOAD DIRECTLY TO SUPABASE (Workday style)
+      const { data: uploadData, error: uploadError } = await supabase_admin
+        .storage
+        .from("Books")
+        .upload(filePath, file, { upsert: true });
+  
+      if (uploadError) throw uploadError;
+  
+      // 2. GET THE PUBLIC URL
+      const { data: { publicUrl } } = supabase_admin
+        .storage
+        .from("Books")
+        .getPublicUrl(filePath);
+  
+      // 3. SEND URL TO RENDER FOR PROCESSING
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
-        body: formData,
-        signal: controller.signal, // Connect the timeout
-        mode: 'cors',
-        headers: {
-            'Accept': 'application/x-ndjson',
-        },
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_url: publicUrl,
+          file_name: file.name
+        }),
       });
+  
+      // 4. STREAMING LOGIC (Same as before, no visual changes)
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let partialChunk = "";
+  
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+  
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = (partialChunk + chunk).split("\n");
+        partialChunk = lines.pop();
+  
+        const pageTexts = lines
+          .filter(l => l.trim())
+          .map(l => {
+            try { return JSON.parse(l).text; } 
+            catch(e) { return null; }
+          })
+          .filter(t => t !== null);
+  
+        if (pageTexts.length > 0) {
+          setRawSentences(prev => [...prev, ...pageTexts]);
+        }
+      }
+    } catch (err) {
+      console.error("Upload failed:", err);
+      alert("Mobile upload failed. Please try a smaller file or stable Wi-Fi.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
       clearTimeout(timeoutId);
 

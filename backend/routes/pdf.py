@@ -1,68 +1,47 @@
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks
-from fastapi.responses import StreamingResponse
-import fitz
-import json
-import gc
+import io, gc, logging, pdfplumber
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from database import supabase_admin
 
 router = APIRouter()
+BUCKET_NAME = "Books"
 
-# Logic: Totally separate the Supabase work from the Phone's work
-def upload_to_supabase_logic(content, filename):
-    try:
-        supabase_admin.storage.from_("Books").upload(
-            path=f"uploads/{filename}",
-            file=content,
-            file_options={"upsert": "true"}
-        )
-    except:
-        pass
-
-@router.post("/upload")
-async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    # 1. Read the file
+@router.post("/upload_to_storage")
+async def upload_to_storage(file: UploadFile = File(...)):
+    # STEP 1: Just upload the file to Supabase and return the path
+    # This keeps the initial request very fast
     content = await file.read()
-    
-    # 2. Push Supabase to the background IMMEDIATELY
-    background_tasks.add_task(upload_to_supabase_logic, content, file.filename)
+    storage_path = f"uploads/{file.filename}"
+    try:
+        supabase_admin.storage.from_(BUCKET_NAME).upload(
+            storage_path, content, {"content-type": "application/pdf", "upsert": "true"}
+        )
+        return {"storage_path": storage_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def stream_pdf_content():
-        doc = None
-        try:
-            # 3. Open PDF instantly
-            doc = fitz.open(stream=content, filetype="pdf")
-            total = len(doc)
+@router.get("/extract_batch")
+async def extract_batch(path: str, start_page: int, batch_size: int = 5):
+    # STEP 2: Extract only a small 'window' of pages
+    try:
+        # Download the file from Supabase
+        file_data = supabase_admin.storage.from_(BUCKET_NAME).download(path)
+        
+        pages_text = []
+        with pdfplumber.open(io.BytesIO(file_data)) as pdf:
+            total = len(pdf.pages)
+            end_page = min(start_page + batch_size, total)
             
-            for i in range(total):
-                page = doc.load_page(i)
-                text = page.get_text("text")
-                
-                # 4. Use "ndjson" format - send line by line
-                data = json.dumps({
-                    "page_index": i + 1,
-                    "total_pages": total,
-                    "text": text
-                }) + "\n"
-                
-                yield data
-                
-                # Cleanup every few pages to save Render RAM
-                if i % 5 == 0:
-                    gc.collect()
-                    
-        except Exception as e:
-            yield json.dumps({"error": str(e)}) + "\n"
-        finally:
-            if doc: doc.close()
-            gc.collect()
-
-    # 5. Critical Headers for Mobile Stability
-    return StreamingResponse(
-        stream_pdf_content(),
-        media_type="application/x-ndjson",
-        headers={
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Tells Render not to buffer
-        }
-    )
+            for i in range(start_page, end_page):
+                text = pdf.pages[i].extract_text() or ""
+                pages_text.append(text)
+            
+            return {
+                "pages": pages_text,
+                "total_pages": total,
+                "next_start": end_page if end_page < total else None
+            }
+    except Exception as e:
+        gc.collect()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        gc.collect()
