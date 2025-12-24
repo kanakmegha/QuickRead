@@ -42,79 +42,45 @@ export default function Dashboard() {
     return { allWords: words, pages: newPages };
   }, [rawSentences]);
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0];
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
     if (!file) return;
-
+  
     setLoading(true);
-    setRawSentences([]);
-    setCurrentPage(0);
-    setCurrentWordIndex(0);
-    setReading(false);
-    clearReaderInterval();
-
+    setExtractedText(""); // Clear previous text
+    
+    const formData = new FormData();
+    formData.append("file", file);
+  
     try {
-      // 1. UPLOAD DIRECTLY TO SUPABASE
-      // This bypasses Render for the heavy upload, fixing mobile "Interrupted" errors
-      const filePath = `uploads/${Date.now()}_${file.name}`;
-      // This version passes the Vercel build
-      const { error: uploadError } = await supabase_admin
-        .storage
-        .from("Books")
-        .upload(filePath, file, { upsert: true });
-
-      if (uploadError) throw uploadError;
-
-      // 2. GET THE PUBLIC URL
-      const { data: { publicUrl } } = supabase_admin
-        .storage
-        .from("Books")
-        .getPublicUrl(filePath);
-
-      // 3. SEND URL TO RENDER (FASTAPI)
-      const response = await fetch(`${backendUrl}/upload`, {
+      const response = await fetch("https://quickread-bggq.onrender.com/upload", {
         method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ 
-            file_url: publicUrl, 
-            file_name: file.name 
-        }),
-    });
-
-      if (!response.ok) throw new Error("Server error");
-
-      // 4. STREAMING READER
+        body: formData,
+      });
+  
+      if (!response.ok) throw new Error("Connection failed");
+  
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let partialChunk = "";
-
+  
       while (true) {
-        const { done, value } = await reader.read();
+        const { value, done } = await reader.read();
         if (done) break;
-
+  
         const chunk = decoder.decode(value, { stream: true });
-        const lines = (partialChunk + chunk).split("\n");
-        partialChunk = lines.pop();
-
-        const pageTexts = lines
-          .filter(l => l.trim())
-          .map(l => {
-            try { return JSON.parse(l).text; } 
-            catch(e) { return null; }
-          })
-          .filter(t => t !== null);
-
-        if (pageTexts.length > 0) {
-          setRawSentences(prev => [...prev, ...pageTexts]);
-        }
+        const lines = chunk.split("\n");
+  
+        lines.forEach(line => {
+          if (line.trim()) {
+            const data = JSON.parse(line);
+            // Append new page text to the existing text
+            setExtractedText(prev => prev + `\n--- Page ${data.page} ---\n` + data.text);
+          }
+        });
       }
     } catch (err) {
-      console.error("FULL ERROR OBJECT:", err);
-      // This alert will show the actual error message
-      alert("Error Name: " + err.name + "\nMessage: " + err.message);
-    
+      console.error("Streaming error:", err);
+      alert("Failed to process PDF. Make sure the server is awake.");
     } finally {
       setLoading(false);
     }
