@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { supabase_admin } from "../database"; 
 import "../App.css";
 
 const PAGE_WORD_COUNT = 200;
 
 export default function Dashboard() {
-  const [rawSentences, setRawSentences] = useState([]);
+  const [rawSentences, setRawSentences] = useState([]); 
   const [currentPage, setCurrentPage] = useState(0);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [mode, setMode] = useState("book");
@@ -42,45 +41,53 @@ export default function Dashboard() {
     return { allWords: words, pages: newPages };
   }, [rawSentences]);
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
     if (!file) return;
-  
+
     setLoading(true);
-    setExtractedText(""); // Clear previous text
-    
+    setRawSentences([]); 
+    setCurrentPage(0);
+    setCurrentWordIndex(0);
+    setReading(false);
+    clearReaderInterval();
+
     const formData = new FormData();
     formData.append("file", file);
-  
+
     try {
-      const response = await fetch("https://quickread-bggq.onrender.com/upload", {
+      const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
       });
-  
-      if (!response.ok) throw new Error("Connection failed");
-  
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-  
+      let partialChunk = "";
+
       while (true) {
-        const { value, done } = await reader.read();
+        const { done, value } = await reader.read();
         if (done) break;
-  
+
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-  
-        lines.forEach(line => {
-          if (line.trim()) {
-            const data = JSON.parse(line);
-            // Append new page text to the existing text
-            setExtractedText(prev => prev + `\n--- Page ${data.page} ---\n` + data.text);
-          }
-        });
+        const lines = (partialChunk + chunk).split("\n");
+        partialChunk = lines.pop(); // Logic Fix: Store incomplete line for next chunk
+
+        const pageTexts = lines
+          .filter(l => l.trim())
+          .map(l => {
+            try { return JSON.parse(l).text; } 
+            catch(e) { return null; }
+          })
+          .filter(t => t !== null);
+
+        if (pageTexts.length > 0) {
+          setRawSentences(prev => [...prev, ...pageTexts]);
+        }
       }
     } catch (err) {
-      console.error("Streaming error:", err);
-      alert("Failed to process PDF. Make sure the server is awake.");
+      console.error("Upload error:", err);
+      alert("Extraction interrupted. Check your internet connection.");
     } finally {
       setLoading(false);
     }
