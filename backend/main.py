@@ -21,6 +21,7 @@ from upload_router import router as upload_router  # this file
 
 app.include_router(auth_router)
 app.include_router(upload_router)
+
 @app.get("/")
 def home():
     return {"status": "Backend is running 🚀"}

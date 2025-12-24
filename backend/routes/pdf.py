@@ -1,24 +1,15 @@
-import fitz  # PyMuPDF
-from fastapi import FastAPI, UploadFile, File
+from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+import fitz  # PyMuPDF
 import json
 import asyncio
 
-app = FastAPI()
+# This is the line the error is looking for!
+router = APIRouter(prefix="/pdf", tags=["pdf"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.post("/upload")
+@router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     async def stream_pdf_content():
-        # Read file into memory
         content = await file.read()
         doc = fitz.open(stream=content, filetype="pdf")
         
@@ -26,14 +17,11 @@ async def upload_file(file: UploadFile = File(...)):
             page = doc.load_page(page_num)
             text = page.get_text()
             
-            # Send each page as a JSON chunk
             yield json.dumps({
-                "page": page_num + 1,
-                "text": text,
+                "page": page_num + 1, 
+                "text": text, 
                 "total_pages": len(doc)
             }) + "\n"
-            
-            # Tiny sleep to ensure the stream stays open and smooth
             await asyncio.sleep(0.01)
 
     return StreamingResponse(stream_pdf_content(), media_type="application/x-ndjson")
