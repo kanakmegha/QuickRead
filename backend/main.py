@@ -10,24 +10,23 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # This allows ALL Vercel preview URLs to work
+    allow_origins=[
+        "https://quick-read-five.vercel.app",
+        "http://localhost:3000"
+        "http://localhost:80"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-from auth_router import router as auth_router  # your previous auth code
-from upload_router import router as upload_router  # this file
-
-app.include_router(auth_router)
-app.include_router(upload_router)
+app.include_router(pdf_router, tags=["pdf"])
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
 
 @app.get("/")
 def home():
     return {"status": "Backend is running 🚀"}
-@app.options("/{path:path}")
-async def preflight_handler(path: str):
-    return Response(status_code=status.HTTP_200_OK)
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
