@@ -25,9 +25,10 @@ export default function Dashboard() {
 
   const { allWords, pages } = useMemo(() => {
     if (rawSentences.length === 0) return { allWords: [], pages: [] };
-
+    console.log(`Recalculating words for ${rawSentences.length} pages...`);
+    
     const fullText = rawSentences.join(" ");
-    const lower = fullText.toLowerCase();
+    const lower = fullText.slice(0, 5000).toLowerCase(); 
     const prefaceMatch = lower.match(/preface|introduction/);
     const startFrom = prefaceMatch ? lower.indexOf(prefaceMatch[0]) : 0;
 
@@ -57,28 +58,46 @@ export default function Dashboard() {
     formData.append("file", file);
 
     try {
+      console.log('Sending request to:', `${backendUrl}/upload`);
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Server error:', response.status, errorText);
+        throw new Error(`Server returned ${response.status}: ${errorText}`);
+      }
+
+      console.log('Response OK, starting reader...');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let partialChunk = "";
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log('Stream finished successfully');
+          break;
+        }
 
         const chunk = decoder.decode(value, { stream: true });
         const lines = (partialChunk + chunk).split("\n");
-        partialChunk = lines.pop(); // Logic Fix: Store incomplete line for next chunk
+        partialChunk = lines.pop(); 
 
         const pageTexts = lines
           .filter(l => l.trim())
           .map(l => {
-            try { return JSON.parse(l).text; } 
-            catch(e) { return null; }
+            try { 
+              const parsed = JSON.parse(l);
+              if (parsed.error) console.error('Backend Extraction Error:', parsed.error);
+              return parsed.text; 
+            } 
+            catch(err) { 
+              console.error('Failed to parse chunk:', err, l);
+              return null; 
+            }
           })
           .filter(t => t !== null);
 
@@ -87,8 +106,8 @@ export default function Dashboard() {
         }
       }
     } catch (err) {
-      console.error("Upload error:", err);
-      alert("Extraction interrupted. Check your internet connection.");
+      console.error("Critical Upload failure:", err);
+      alert(`Extraction failed: ${err.message}. Please check the console for details.`);
     } finally {
       setLoading(false);
     }
