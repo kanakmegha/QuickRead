@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import "../App.css";
+import API_BASE_URL from "../utils/api";
 
 const PAGE_WORD_COUNT = 200;
 
@@ -13,7 +14,7 @@ export default function Dashboard() {
   const [wpm, setWpm] = useState(300);
   const intervalRef = useRef(null);
 
-  const backendUrl = "https://quickread-bggq.onrender.com";
+  const backendUrl = API_BASE_URL;
 
   const clearReaderInterval = () => {
     if (intervalRef.current) {
