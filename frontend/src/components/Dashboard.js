@@ -58,56 +58,58 @@ export default function Dashboard() {
     formData.append("file", file);
 
     try {
-      console.log('Sending request to:', `${backendUrl}/upload`);
-      const response = await fetch(`${backendUrl}/upload`, {
+      console.log('Sending upload request to:', `${backendUrl}/upload`);
+      const uploadResponse = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         body: formData,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Server error:', response.status, errorText);
-        throw new Error(`Server returned ${response.status}: ${errorText}`);
+      if (!uploadResponse.ok) {
+        throw new Error(`Upload failed: ${uploadResponse.status}`);
       }
 
-      console.log('Response OK, starting reader...');
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let partialChunk = "";
+      const { filename } = await uploadResponse.json();
+      console.log('Upload successful, starting polling for:', filename);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          console.log('Stream finished successfully');
+      // Polling logic
+      let isReady = false;
+      let attempts = 0;
+      const MAX_ATTEMPTS = 60; // 60 seconds approximately
+
+      while (!isReady && attempts < MAX_ATTEMPTS) {
+        attempts++;
+        const statusResponse = await fetch(`${backendUrl}/status/${filename}`);
+        const { status } = await statusResponse.json();
+
+        if (status === "ready") {
+          isReady = true;
           break;
+        } else if (status === "error") {
+          throw new Error("Backend extraction failed.");
         }
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = (partialChunk + chunk).split("\n");
-        partialChunk = lines.pop(); 
-
-        const pageTexts = lines
-          .filter(l => l.trim())
-          .map(l => {
-            try { 
-              const parsed = JSON.parse(l);
-              if (parsed.error) console.error('Backend Extraction Error:', parsed.error);
-              return parsed.text; 
-            } 
-            catch(err) { 
-              console.error('Failed to parse chunk:', err, l);
-              return null; 
-            }
-          })
-          .filter(t => t !== null);
-
-        if (pageTexts.length > 0) {
-          setRawSentences(prev => [...prev, ...pageTexts]);
-        }
+        console.log(`Polling attempt ${attempts}: still processing...`);
+        await new Promise(r => setTimeout(r, 2000)); // Poll every 2 seconds
       }
+
+      if (!isReady) {
+        throw new Error("Extraction timed out. It might be a very large file, check back later.");
+      }
+
+      // Fetch result
+      console.log('Extraction ready, fetching result...');
+      const resultResponse = await fetch(`${backendUrl}/result/${filename}`);
+      const data = await resultResponse.json();
+
+      if (data.pages && data.pages.length > 0) {
+        setRawSentences(data.pages);
+      } else {
+        throw new Error("Extracted data is empty.");
+      }
+
     } catch (err) {
-      console.error("Critical Upload failure:", err);
-      alert(`Extraction failed: ${err.message}. Please check the console for details.`);
+      console.error("Critical failure:", err);
+      alert(`Error: ${err.message}. Please check the console for details.`);
     } finally {
       setLoading(false);
     }
